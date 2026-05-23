@@ -11884,6 +11884,9 @@ void OutfitStudioFrame::OnCopyBoneWeight(wxCommandEvent& WXUNUSED(event)) {
 int OutfitStudioFrame::CopyBoneWeightForShapes(std::vector<NiShape*> shapes, bool silent) {
 	CloseBrushSettings();
 
+	if (shapes.empty())
+		return 0;
+
 	WeightCopyOptions options;
 	CalcCopySkinTransOption(options);
 	AnimInfo& workAnim = *project->GetWorkAnim();

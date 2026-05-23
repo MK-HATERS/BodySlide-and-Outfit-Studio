@@ -75,7 +75,9 @@ public:
 	void InsertVertexIndices(const std::string& target, const std::vector<uint16_t>& indices);
 
 	void ClearProximityCache();
-	void BuildProximityCache(const std::string& shapeName, float proximityRadius = 10.0f, const std::set<uint16_t>* maskIndices = nullptr);
+	// maxResultsPerVertex: cap on how many reference vertices are stored per source vertex.
+	// INT_MAX (default) means no cap — matches old behaviour.
+	void BuildProximityCache(const std::string& shapeName, float proximityRadius = 10.0f, const std::set<uint16_t>* maskIndices = nullptr, int maxResultsPerVertex = INT_MAX);
 
 	// shapeName = name of the mesh to morph (eg "IronArmor") also known as target name.
 	// sliderName = name of the morph to apply (eg "BreastsSH").

@@ -218,7 +218,7 @@ void Automorph::ClearProximityCache() {
 	prox_cache.clear();
 }
 
-void Automorph::BuildProximityCache(const std::string& shapeName, float proximityRadius, const std::set<uint16_t>* maskIndices) {
+void Automorph::BuildProximityCache(const std::string& shapeName, float proximityRadius, const std::set<uint16_t>* maskIndices, int maxResultsPerVertex) {
 	if (sourceShapes.find(shapeName) == sourceShapes.end())
 		return;
 
@@ -235,6 +235,10 @@ void Automorph::BuildProximityCache(const std::string& shapeName, float proximit
 
 		std::vector<kd_query_result<uint16_t>> indexResults;
 		for (uint16_t id = 0; id < resultCount; id++) {
+			// Honour the caller's per-vertex cap (results are already sorted nearest-first).
+			if (static_cast<int>(indexResults.size()) >= maxResultsPerVertex)
+				break;
+
 			auto& result = refTree->queryResult[id];
 
 			if (maskIndices) {

@@ -13,6 +13,9 @@ See the included LICENSE file
 
 #include <fstream>
 #include <regex>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 #include "OutfitStudio.h"
 
@@ -153,6 +156,22 @@ std::string ConvertBodyReferenceDialog::GetShapeNameFromTemplate(const wxString&
 }
 
 void ConvertBodyReferenceDialog::ConvertBodyReference() const {
+	try {
+
+#define CBR_LOG(msg, ...) do { wxLogMessage("[CBR] " msg, ##__VA_ARGS__); wxLog::FlushActive(); } while(0)
+// Heap-validation helper — remove once CBR crash is fixed.
+#ifdef _WIN32
+#define CBR_HV(label) do { \
+	BOOL _hv = HeapValidate(GetProcessHeap(), 0, NULL); \
+	wxLogMessage("[HV] CBR/" label ": heap %s", _hv ? wxString("OK") : wxString("CORRUPTED")); \
+	wxLog::FlushActive(); \
+} while(0)
+#else
+#define CBR_HV(label) do {} while(0)
+#endif
+
+	CBR_LOG("ConvertBodyReference: started");
+	CBR_HV("wizard entry");
 	outfitStudio->StartProgress(_("Starting conversion..."));
 
 	bool mergeSliders = ConfigDialogUtil::SetBoolFromDialogCheckbox(config, (*this), "ConvertBodyReference", "chkConvertMergeSliders");
@@ -168,6 +187,9 @@ void ConvertBodyReferenceDialog::ConvertBodyReference() const {
 	auto appendToProjectText = ConfigDialogUtil::SetStringFromDialogTextControl(config, (*this), "ConvertBodyReference", "npAppendText");
 	auto deleteShapesText = ConfigDialogUtil::SetStringFromDialogTextControl(config, (*this), "ConvertBodyReference", "npDeleteShapesText");
 	auto addBonesText = ConfigDialogUtil::SetStringFromDialogTextControl(config, (*this), "ConvertBodyReference", "npAddBonesText");
+
+	CBR_LOG("settings read: convRef='%s' newRef='%s' mergeSliders=%d mergeZaps=%d conform=%d copyBones=%d deleteRefOnComplete=%d",
+			conversionRefTemplate, newRefTemplate, (int)mergeSliders, (int)mergeZaps, (int)conformSliders, (int)copyBoneWeights, (int)deleteReferenceOnCompleted);
 
 	Config.SaveConfig(Config["AppDir"] + "/Config.xml");
 
@@ -205,10 +227,23 @@ void ConvertBodyReferenceDialog::ConvertBodyReference() const {
 		outfitStudio->UpdateTitle();
 	}
 
+	CBR_LOG("calling DeleteSliders (mergeSliders=%d mergeZaps=%d)", (int)mergeSliders, (int)mergeZaps);
 	outfitStudio->DeleteSliders(mergeSliders, mergeZaps); // we need to do this first so we can clear any broken sliders
+
+	CBR_LOG("calling ResetTransforms");
 	project->ResetTransforms();
 
-	auto originalShapes = project->GetWorkNif()->GetShapes(); // get outfit shapes
+	CBR_LOG("calling GetWorkNif()->GetShapes() for original shapes");
+	auto workNif = project->GetWorkNif();
+	if (!workNif) {
+		wxLogError("[CBR] GetWorkNif() returned null — aborting");
+		wxLog::FlushActive();
+		outfitStudio->EndProgress("", true);
+		return;
+	}
+	auto originalShapes = workNif->GetShapes(); // get outfit shapes
+	CBR_LOG("got %zu original shapes", originalShapes.size());
+
 	if (!deleteShapesText.IsEmpty()) {
 		outfitStudio->UpdateProgress(5, _("Deleting Shapes..."));
 		wxStringTokenizer tkz(deleteShapesText, wxT(","));
@@ -220,6 +255,7 @@ void ConvertBodyReferenceDialog::ConvertBodyReference() const {
 					continue;
 				auto shapeName = wxString(shape->name.get().c_str());
 				if (shapeName.Contains(token)) {
+					CBR_LOG("deleting shape '%s' (matched token '%s')", shapeName, token);
 					project->DeleteShape(shape);
 					shape = nullptr;
 				}
@@ -227,153 +263,67 @@ void ConvertBodyReferenceDialog::ConvertBodyReference() const {
 		}
 	}
 
+	CBR_LOG("deleting base shape");
 	project->DeleteShape(project->GetBaseShape());
-	auto remainingOutfitShapes = project->GetWorkNif()->GetShapes(); // get outfit shapes
+
+	// getOutfitShapes() — returns fresh NiShape* for every shape that is NOT the
+	// current base/reference shape.  MUST be called AFTER each LoadReferenceTemplate
+	// so the base pointer is up-to-date.
+	// Rationale: LoadReferenceTemplate can call DeleteShape on an existing shape that
+	// shares a name with the incoming reference, then clone a fresh copy.  Any
+	// pointer captured before that call becomes dangling; dereferencing it (even to
+	// read the name) is undefined behaviour and causes an access-violation that
+	// bypasses all C++ catch blocks (Windows SEH → OnFatalException).
+	auto getOutfitShapes = [&]() -> std::vector<NiShape*> {
+		std::vector<NiShape*> outfits;
+		auto* nif = project->GetWorkNif();
+		if (!nif)
+			return outfits;
+		for (auto* s : nif->GetShapes())
+			if (s && !project->IsBaseShape(s))
+				outfits.push_back(s);
+		return outfits;
+	};
+
+	{
+		auto pre = project->GetWorkNif() ? project->GetWorkNif()->GetShapes() : std::vector<NiShape*>{};
+		CBR_LOG("shapes in NIF before conversion step: %zu", pre.size());
+		for (auto* s : pre)
+			CBR_LOG("  '%s' (isBase=%d)", wxString(s->name.get().c_str()), (int)project->IsBaseShape(s));
+	}
+
+	// Suppress "deleted shapes" modal dialogs for the duration of the entire wizard.
+	// LoadReference shows a wxMessageBox when a shape is deleted as a duplicate.
+	// That modal's message pump can re-enter the GL render path while the scene is
+	// partially built (new shape cloned into workNif but no GL mesh yet), corrupting
+	// the heap.  During the wizard these deletions are always intentional, so we log
+	// them instead of showing a modal.
+	project->bSuppressLoadWarnings = true;
 
 	if (conversionRefTemplate != "None") {
-		const auto targetGame = static_cast<TargetGame>(Config.GetIntValue("TargetGame"));
-		const bool isStarfield = (targetGame == SF);
+		outfitStudio->UpdateProgress(5, _("Loading conversion reference..."));
+		outfitStudio->StartSubProgress(5, 10);
+		CBR_LOG("loading conversion reference template: '%s'", conversionRefTemplate);
+		if (AlertProgressError(LoadReferenceTemplate(conversionRefTemplate, mergeSliders, mergeZaps),
+							   _("Load Error"), "Failed to load conversion reference"))
+			return;
+		CBR_HV("after first LoadReferenceTemplate");
+		outfitStudio->EndProgress();
 
-		if (isStarfield) {
-			// ── Starfield: mesh-based body conversion ─────────────────────────────
-			// Starfield bodies carry no BodySlide sliders; instead we compute the
-			// per-vertex delta between the two body NIFs, inject it as a temporary
-			// slider on the reference, conform outfit shapes to it, apply at 100 %,
-			// and bake the result – reusing the existing conform infrastructure.
+		// Derive a FRESH list of outfit shapes now that the conversion reference has
+		// been loaded.  Old pointers (captured before LoadReferenceTemplate) may be
+		// dangling.
+		//
+		// IMPORTANT: evaluate BEFORE calling CreateSetSliders / RefreshGUIFromProj.
+		// RefreshGUIFromProj triggers MeshesFromProj() which rebuilds GL meshes;
+		// in certain configurations (pure body project, reference replaced the only
+		// shape) this can corrupt the heap.  When there are no outfit shapes to
+		// conform or deform, skip the entire heavy GL rebuild — it serves no purpose.
+		auto shapesToConform = getOutfitShapes();
+		CBR_LOG("outfit shapes after loading conversion ref: %zu", shapesToConform.size());
 
-			outfitStudio->UpdateProgress(3, _("Resolving body NIF paths..."));
-
-			const std::string vanillaNifPath = GetNifPathFromTemplate(conversionRefTemplate);
-			const std::string customNifPath   = GetNifPathFromTemplate(newRefTemplate);
-			const std::string vanillaShapeName = GetShapeNameFromTemplate(conversionRefTemplate);
-			const std::string customShapeName  = GetShapeNameFromTemplate(newRefTemplate);
-
-			if (vanillaNifPath.empty() || customNifPath.empty()) {
-				wxLogError("Starfield conversion: could not resolve body NIF paths.");
-				wxMessageBox(_("Could not resolve body NIF paths for Starfield conversion.\n"
-							   "Check that both reference templates point to valid slider sets."),
-							 _("Starfield Conversion Error"), wxICON_ERROR);
-				outfitStudio->EndProgress("", true);
-				outfitStudio->RefreshGUIFromProj();
-				return;
-			}
-
-			// Load both NIFs (read-only, outside the project)
-			nifly::NifFile vanillaNif, customNif;
-			{
-				std::fstream vf, cf;
-				PlatformUtil::OpenFileStream(vf, vanillaNifPath, std::ios::in | std::ios::binary);
-				PlatformUtil::OpenFileStream(cf, customNifPath,  std::ios::in | std::ios::binary);
-				if (vanillaNif.Load(vf) || customNif.Load(cf)) {
-					wxLogError("Starfield conversion: failed to load body NIFs.");
-					wxMessageBox(_("Failed to load one or both body NIF files for Starfield conversion."),
-								 _("Starfield Conversion Error"), wxICON_ERROR);
-					outfitStudio->EndProgress("", true);
-					outfitStudio->RefreshGUIFromProj();
-					return;
-				}
-			}
-
-			// Resolve shapes (prefer named, fall back to first shape)
-			auto* vanillaShape = vanillaNif.FindBlockByName<nifly::NiShape>(vanillaShapeName);
-			auto* customShape  = customNif.FindBlockByName<nifly::NiShape>(customShapeName);
-			if (!vanillaShape) {
-				auto shapes = vanillaNif.GetShapes();
-				if (!shapes.empty()) vanillaShape = shapes[0];
-			}
-			if (!customShape) {
-				auto shapes = customNif.GetShapes();
-				if (!shapes.empty()) customShape = shapes[0];
-			}
-
-			if (!vanillaShape || !customShape) {
-				wxLogError("Starfield conversion: could not find body shapes in NIFs.");
-				wxMessageBox(_("Could not find body shapes in the NIF files."),
-							 _("Starfield Conversion Error"), wxICON_ERROR);
-				outfitStudio->EndProgress("", true);
-				outfitStudio->RefreshGUIFromProj();
-				return;
-			}
-
-			std::vector<nifly::Vector3> vanillaVerts, customVerts;
-			vanillaNif.GetVertsForShape(vanillaShape, vanillaVerts);
-			customNif.GetVertsForShape(customShape, customVerts);
-
-			if (vanillaVerts.empty() || customVerts.empty()) {
-				wxLogError("Starfield conversion: body shapes have no vertices.");
-				wxMessageBox(_("Body shapes have no vertices."), _("Starfield Conversion Error"), wxICON_ERROR);
-				outfitStudio->EndProgress("", true);
-				outfitStudio->RefreshGUIFromProj();
-				return;
-			}
-
-			if (vanillaVerts.size() != customVerts.size()) {
-				wxLogWarning("Starfield conversion: vertex count mismatch (vanilla=%zu, custom=%zu). "
-							 "Only %zu vertices will be used for the delta.",
-							 vanillaVerts.size(), customVerts.size(),
-							 std::min(vanillaVerts.size(), customVerts.size()));
-			}
-
-			// Build per-vertex delta (vanilla → custom)
-			std::unordered_map<uint16_t, nifly::Vector3> delta;
-			const size_t vtxCount = std::min(vanillaVerts.size(), customVerts.size());
-			for (size_t i = 0; i < vtxCount; i++) {
-				const nifly::Vector3 d = customVerts[i] - vanillaVerts[i];
-				if (d.x != 0.0f || d.y != 0.0f || d.z != 0.0f)
-					delta[static_cast<uint16_t>(i)] = d;
-			}
-
-			wxLogMessage("Starfield conversion: computed %zu non-zero vertex deltas.", delta.size());
-
-			if (!delta.empty()) {
-				// Load vanilla body as the project reference
-				outfitStudio->UpdateProgress(5, _("Loading conversion reference..."));
-				outfitStudio->StartSubProgress(5, 10);
-				if (AlertProgressError(LoadReferenceTemplate(conversionRefTemplate, mergeSliders, mergeZaps),
-									   _("Load Error"), "Failed to load conversion reference"))
-					return;
-				outfitStudio->EndProgress();
-
-				// Inject the delta as a temporary slider on the reference body
-				const std::string convSliderName = "__SFBodyConversion__";
-				project->AddReferenceBodyDeltaSlider(convSliderName, delta);
-
-				outfitStudio->StartSubProgress(10, 20);
-				outfitStudio->CreateSetSliders();
-				outfitStudio->RefreshGUIFromProj();
-
-				// Conform all outfit shapes to the conversion slider
-				outfitStudio->UpdateProgress(20, _("Conforming outfit shapes to conversion body..."));
-				outfitStudio->StartSubProgress(20, 35);
-				if (AlertProgressError(outfitStudio->ConformShapes(remainingOutfitShapes, true),
-									   _("Conform Error"), "Failed to conform shapes"))
-					return;
-
-				// Push the conversion slider to 100 % so outfit verts match the custom body
-				outfitStudio->UpdateProgress(35, _("Applying body conversion..."));
-				outfitStudio->SetSliderValue(convSliderName, 100);
-				outfitStudio->ApplySliders();
-
-				// Bake the transformed vertex positions into the base mesh
-				outfitStudio->UpdateProgress(40, _("Baking conversion into base mesh..."));
-				outfitStudio->SetBaseShape();
-				project->DeleteShape(project->GetBaseShape());
-				outfitStudio->DeleteSliders(mergeSliders, mergeZaps);
-				project->GetWorkAnim()->Clear();
-			}
-			else {
-				wxLogMessage("Starfield conversion: bodies are identical, skipping conversion step.");
-			}
-		}
-		else {
-			// ── Non-Starfield: original slider-based conversion ───────────────────
-			outfitStudio->UpdateProgress(5, _("Loading conversion reference..."));
-			outfitStudio->StartSubProgress(5, 10);
-			if (AlertProgressError(LoadReferenceTemplate(conversionRefTemplate, mergeSliders, mergeZaps),
-								   _("Load Error"), "Failed to load conversion reference"))
-				return;
-			outfitStudio->EndProgress();
-
+		if (!shapesToConform.empty()) {
+			CBR_LOG("has outfit shapes — running CreateSetSliders + RefreshGUIFromProj + conform");
 			outfitStudio->StartSubProgress(10, 20);
 			outfitStudio->CreateSetSliders();
 			outfitStudio->RefreshGUIFromProj();
@@ -381,56 +331,120 @@ void ConvertBodyReferenceDialog::ConvertBodyReference() const {
 			outfitStudio->UpdateProgress(20, _("Conforming outfit parts..."));
 			outfitStudio->StartSubProgress(20, 35);
 
-			// We shouldn't ever need to skip using default for this case as a correct
-			// conversion reference should always conform accurately
-			if (AlertProgressError(outfitStudio->ConformShapes(remainingOutfitShapes, true),
+			// A correct conversion reference should always conform accurately, so
+			// skip the default-conform fallback popup.
+			CBR_LOG("calling ConformShapes (%zu shapes)", shapesToConform.size());
+			if (AlertProgressError(outfitStudio->ConformShapes(shapesToConform, true),
 								   _("Conform Error"), "Failed to conform shapes"))
 				return;
 
 			outfitStudio->UpdateProgress(35, _("Updating conversion Slider..."));
-			if (project->activeSet.size() > 0) {
-				outfitStudio->SetSliderValue(project->activeSet.size() - 1, 100);
-				outfitStudio->ApplySliders();
+			// Applying the conversion slider at 100% deforms outfit shapes to the
+			// converted position.
+			{
+				size_t activeSetSz = project->activeSet.size();
+				if (activeSetSz > 0) {
+					CBR_LOG("calling SetSliderValue(%lu, 100) + ApplySliders", (unsigned long)(activeSetSz - 1));
+					outfitStudio->SetSliderValue(activeSetSz - 1, 100);
+					outfitStudio->ApplySliders();
+					CBR_LOG("SetSliderValue + ApplySliders done");
+				}
 			}
-
-			outfitStudio->UpdateProgress(40, _("Setting the base shape and removing the conversion reference"));
-			outfitStudio->SetBaseShape();
-			project->DeleteShape(project->GetBaseShape());
-			outfitStudio->DeleteSliders(mergeSliders, mergeZaps);
-			project->GetWorkAnim()->Clear();
 		}
+		else {
+			CBR_LOG("no outfit shapes — skipping CreateSetSliders/RefreshGUIFromProj/conform/apply");
+		}
+
+		outfitStudio->UpdateProgress(40, _("Setting the base shape and removing the conversion reference"));
+
+		if (!shapesToConform.empty()) {
+			// Outfit shapes were conformed/deformed — bake the morphed state into the NIF.
+			wxLogMessage("[CBR] calling SetBaseShape (outfit shapes were deformed)");
+			wxLog::FlushActive();
+			outfitStudio->SetBaseShape();
+			wxLogMessage("[CBR] SetBaseShape done");
+			wxLog::FlushActive();
+		}
+		else {
+			// No outfit shapes — nothing was deformed, nothing to bake.
+			// Skip SetBaseShape entirely to avoid GL/heap corruption from
+			// operating on a project with no GL meshes.
+			CBR_LOG("no outfit shapes — skipping SetBaseShape (nothing was deformed)");
+		}
+
+		wxLogMessage("[CBR] calling DeleteShape(baseShape)");
+		wxLog::FlushActive();
+		CBR_HV("before DeleteShape(convRef baseShape)");
+		project->DeleteShape(project->GetBaseShape());
+		CBR_HV("after DeleteShape(convRef baseShape)");
+
+		wxLogMessage("[CBR] DeleteShape done — calling DeleteSliders");
+		wxLog::FlushActive();
+		outfitStudio->DeleteSliders(mergeSliders, mergeZaps);
+		CBR_HV("after DeleteSliders");
+
+		wxLogMessage("[CBR] DeleteSliders done — calling WorkAnim->Clear");
+		wxLog::FlushActive();
+		project->GetWorkAnim()->Clear();
+		CBR_HV("after WorkAnim->Clear");
+
+		wxLogMessage("[CBR] WorkAnim->Clear done");
+		wxLog::FlushActive();
 	}
 	else {
+		CBR_LOG("conversionRefTemplate is 'None' — skipping conversion ref step");
 		outfitStudio->UpdateProgress(5, _("Skipping conversion reference..."));
 	}
 
+	CBR_LOG("RefreshGUIFromProj before loading new reference");
+	CBR_HV("before RefreshGUIFromProj (pre-newRef)");
 	outfitStudio->RefreshGUIFromProj();
+	CBR_HV("after RefreshGUIFromProj (pre-newRef)");
 
 	outfitStudio->UpdateProgress(50, _("Loading new reference..."));
 	outfitStudio->StartSubProgress(50, 55);
+	CBR_LOG("loading new reference template: '%s'", newRefTemplate);
 	if (AlertProgressError(LoadReferenceTemplate(newRefTemplate, mergeSliders, mergeZaps), _("Load Error"), "Failed to load new reference"))
 		return;
 	outfitStudio->EndProgress();
 
+	CBR_LOG("CreateSetSliders + RefreshGUIFromProj after new ref load");
 	outfitStudio->StartSubProgress(55, 65);
 	outfitStudio->CreateSetSliders();
 	outfitStudio->RefreshGUIFromProj();
 
+	CBR_LOG("checking GetBaseShape() != nullptr");
 	if (AlertProgressError(project->GetBaseShape() == nullptr, _("Missing Base Shape"), "The loaded reference does not contain a base shape"))
 		return;
 
+	// Refresh outfit shape list after new reference is loaded.
+	auto outfitShapesForNewRef = getOutfitShapes();
+	CBR_LOG("outfit shapes for new-reference operations: %zu", outfitShapesForNewRef.size());
+
 	if (copyBoneWeights) {
-		outfitStudio->UpdateProgress(65, _("Copying bones..."));
-		outfitStudio->StartSubProgress(65, 85);
-		if (AlertProgressError(outfitStudio->CopyBoneWeightForShapes(remainingOutfitShapes, skipCopyBonesPopup), _("Copy Bone Weights Error"), "Failed to copy bone weights"))
-			return;
+		if (!outfitShapesForNewRef.empty()) {
+			outfitStudio->UpdateProgress(65, _("Copying bones..."));
+			outfitStudio->StartSubProgress(65, 85);
+			CBR_LOG("CopyBoneWeightForShapes (%zu shapes, skipPopup=%d)", outfitShapesForNewRef.size(), (int)skipCopyBonesPopup);
+			if (AlertProgressError(outfitStudio->CopyBoneWeightForShapes(outfitShapesForNewRef, skipCopyBonesPopup), _("Copy Bone Weights Error"), "Failed to copy bone weights"))
+				return;
+		}
+		else {
+			CBR_LOG("no outfit shapes for new reference — skipping CopyBoneWeightForShapes");
+		}
 	}
 
 	if (conformSliders) {
-		outfitStudio->UpdateProgress(85, _("Conforming outfit parts..."));
-		outfitStudio->StartSubProgress(85, 100);
-		if (AlertProgressError(outfitStudio->ConformShapes(remainingOutfitShapes, skipConformPopup), _("Conform Error"), "Failed to conform shapes"))
-			return;
+		if (!outfitShapesForNewRef.empty()) {
+			outfitStudio->UpdateProgress(85, _("Conforming outfit parts..."));
+			outfitStudio->StartSubProgress(85, 100);
+			CBR_LOG("ConformShapes for new reference (%zu shapes, skipPopup=%d)", outfitShapesForNewRef.size(), (int)skipConformPopup);
+			if (AlertProgressError(outfitStudio->ConformShapes(outfitShapesForNewRef, skipConformPopup), _("Conform Error"), "Failed to conform shapes"))
+				return;
+		}
+		else {
+			CBR_LOG("no outfit shapes for new reference — skipping ConformShapes");
+		}
 	}
 
 	if (!addBonesText.IsEmpty()) {
@@ -438,32 +452,79 @@ void ConvertBodyReferenceDialog::ConvertBodyReference() const {
 		wxStringTokenizer tkz(addBonesText, wxT(","));
 		while (tkz.HasMoreTokens()) {
 			wxString token = tkz.GetNextToken();
+			CBR_LOG("AddBoneRef: '%s'", token);
 			project->AddBoneRef(token.ToStdString());
 		}
 	}
 
 	if (deleteReferenceOnCompleted) {
-		auto allShapes = project->GetWorkNif()->GetShapes();
-		for (auto& s : allShapes) {
-			if (std::find(remainingOutfitShapes.begin(), remainingOutfitShapes.end(), s) == remainingOutfitShapes.end())
-				project->DeleteShape(s);
+		// Delete any shape that is currently the base/reference, keeping outfit shapes.
+		// Using getOutfitShapes() avoids comparing against stale pre-load pointers.
+		//
+		// GUARD: if there are no outfit shapes, deleting "non-outfit" shapes would delete
+		// everything in the project — including the new reference body itself.  That makes
+		// no sense for a pure body conversion, so skip the deletion entirely.
+		auto freshOutfits = getOutfitShapes();
+		if (freshOutfits.empty()) {
+			CBR_LOG("deleteReferenceOnCompleted: skipping — no outfit shapes present; deleting would remove the new reference body");
+		}
+		else {
+			CBR_LOG("deleteReferenceOnCompleted: removing reference shapes from NIF (%zu outfit shapes kept)", freshOutfits.size());
+			for (auto* s : project->GetWorkNif()->GetShapes()) {
+				if (std::find(freshOutfits.begin(), freshOutfits.end(), s) == freshOutfits.end()) {
+					CBR_LOG("  deleting reference shape '%s'", wxString(s->name.get().c_str()));
+					project->DeleteShape(s);
+				}
+			}
 		}
 	}
 
+	CBR_LOG("DeleteUnreferencedNodes");
 	int deletionCount = 0;
-	auto workNif = project->GetWorkNif();
-	if (workNif)
-		workNif->DeleteUnreferencedNodes(&deletionCount);
+	auto workNif2 = project->GetWorkNif();
+	if (workNif2)
+		workNif2->DeleteUnreferencedNodes(&deletionCount);
 
+	CBR_LOG("RecalcNormals for all shapes");
 	auto allShapes = project->GetWorkNif()->GetShapes();
 	for (auto& s : allShapes)
 		outfitStudio->glView->RecalcNormals(s->name.get());
 
+	CBR_LOG("final RefreshGUIFromProj + ApplySliders");
 	outfitStudio->RefreshGUIFromProj();
 	outfitStudio->ApplySliders();
 
+	project->bSuppressLoadWarnings = false;
+	CBR_LOG("Conversion finished successfully");
 	wxLogMessage("Conversion finished.");
+	wxLog::FlushActive();
 	outfitStudio->EndProgress(_("Conversion finished."));
+
+	} // end try
+	catch (const std::bad_alloc& e) {
+		project->bSuppressLoadWarnings = false;
+		wxLogError("ConvertBodyReference: out of memory — %s", e.what());
+		wxLog::FlushActive();
+		wxMessageBox("Out of memory during conversion.\nThe project data may be too large or corrupt.", _("Conversion Error"), wxICON_ERROR);
+		outfitStudio->EndProgress("", true);
+		outfitStudio->RefreshGUIFromProj();
+	}
+	catch (const std::exception& e) {
+		project->bSuppressLoadWarnings = false;
+		wxLogError("ConvertBodyReference: exception — %s", e.what());
+		wxLog::FlushActive();
+		wxMessageBox(wxString::Format("Conversion failed:\n%s", e.what()), _("Conversion Error"), wxICON_ERROR);
+		outfitStudio->EndProgress("", true);
+		outfitStudio->RefreshGUIFromProj();
+	}
+	catch (...) {
+		project->bSuppressLoadWarnings = false;
+		wxLogError("ConvertBodyReference: unknown exception (possibly an access violation or noexcept violation)");
+		wxLog::FlushActive();
+		wxMessageBox("Conversion failed with an unknown error.\nCheck the log for details.", _("Conversion Error"), wxICON_ERROR);
+		outfitStudio->EndProgress("", true);
+		outfitStudio->RefreshGUIFromProj();
+	}
 }
 
 int ConvertBodyReferenceDialog::LoadReferenceTemplate(const wxString& refTemplate, bool mergeSliders, bool mergeZaps) const {
@@ -476,15 +537,25 @@ int ConvertBodyReferenceDialog::LoadReferenceTemplate(const wxString& refTemplat
 	std::string tmplName{refTemplate.ToUTF8()};
 	auto tmpl = find_if(refTemplates.begin(), refTemplates.end(), [&tmplName](const RefTemplate& rt) { return rt.GetName() == tmplName; });
 	if (tmpl != refTemplates.end()) {
-		if (wxFileName(wxString::FromUTF8(tmpl->GetSource())).IsRelative())
-			error = project->LoadReferenceTemplate(GetProjectPath() + PathSepStr + tmpl->GetSource(),
-												   tmpl->GetSetName(),
-												   tmpl->GetShape(),
-												   tmpl->GetLoadAll(),
-												   mergeSliders,
-												   mergeZaps);
-		else
-			error = project->LoadReferenceTemplate(tmpl->GetSource(), tmpl->GetSetName(), tmpl->GetShape(), tmpl->GetLoadAll(), mergeSliders, mergeZaps);
+		try {
+			if (wxFileName(wxString::FromUTF8(tmpl->GetSource())).IsRelative())
+				error = project->LoadReferenceTemplate(GetProjectPath() + PathSepStr + tmpl->GetSource(),
+													   tmpl->GetSetName(),
+													   tmpl->GetShape(),
+													   tmpl->GetLoadAll(),
+													   mergeSliders,
+													   mergeZaps);
+			else
+				error = project->LoadReferenceTemplate(tmpl->GetSource(), tmpl->GetSetName(), tmpl->GetShape(), tmpl->GetLoadAll(), mergeSliders, mergeZaps);
+		}
+		catch (const std::bad_alloc&) {
+			wxLogError("LoadReferenceTemplate: memory allocation failed while loading '%s'. The NIF or OSD data may be corrupt or too large.", refTemplate);
+			error = -1;
+		}
+		catch (const std::exception& e) {
+			wxLogError("LoadReferenceTemplate: exception loading '%s': %s", refTemplate, e.what());
+			error = -1;
+		}
 	}
 	else
 		error = 1;
@@ -501,6 +572,10 @@ int ConvertBodyReferenceDialog::LoadReferenceTemplate(const wxString& refTemplat
 bool ConvertBodyReferenceDialog::AlertProgressError(int error, const wxString& title, const wxString& message) const {
 	if (error == 0)
 		return false;
+
+	// Always reset the suppress flag before showing any error UI — the wizard is
+	// aborting, and subsequent project operations should use normal behaviour.
+	project->bSuppressLoadWarnings = false;
 
 	wxLogError(message);
 	wxMessageBox(message, title, wxICON_ERROR);

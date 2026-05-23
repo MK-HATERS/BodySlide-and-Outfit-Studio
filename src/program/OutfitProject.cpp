@@ -26,6 +26,19 @@ See the included LICENSE file
 #include <regex>
 #include <sstream>
 
+#ifdef _WIN32
+#include <windows.h>
+// HV_LOG: log HeapValidate result — used only during crash diagnosis.
+// Remove this block and all HV_LOG calls once the CBR crash is fixed.
+#define HV_LOG(label) do { \
+	BOOL _hv = HeapValidate(GetProcessHeap(), 0, NULL); \
+	wxLogMessage("[HV] %s: heap %s", wxString::FromUTF8(label), _hv ? wxString("OK") : wxString("CORRUPTED")); \
+	wxLog::FlushActive(); \
+} while(0)
+#else
+#define HV_LOG(label) do {} while(0)
+#endif
+
 extern ConfigurationManager Config;
 
 using namespace nifly;
@@ -2740,13 +2753,25 @@ int OutfitProject::LoadReferenceNif(const std::string& fileName, const std::stri
 }
 
 int OutfitProject::LoadReference(const std::string& fileName, const std::string& setName, const std::string& shapeName, bool mergeSliders, bool mergeZaps, bool appendNewSliders) {
+#define LR_LOG(msg, ...) do { wxLogMessage("[LR] " msg, ##__VA_ARGS__); wxLog::FlushActive(); } while(0)
+	LR_LOG("LoadReference start: set='%s' shape='%s' mergeSliders=%d mergeZaps=%d", setName, shapeName, (int)mergeSliders, (int)mergeZaps);
+	HV_LOG("LoadReference entry");
 	if (mergeZaps || mergeSliders) {
+		LR_LOG("calling DeleteSliders");
 		owner->DeleteSliders(mergeSliders, mergeZaps);
+		HV_LOG("after DeleteSliders");
+		LR_LOG("calling DeleteShape(baseShape=%p)", (void*)baseShape);
 		DeleteShape(baseShape);
+		LR_LOG("DeleteShape done");
+		HV_LOG("after DeleteShape(baseShape)");
 	}
-	else
+	else {
+		LR_LOG("calling ClearReference");
 		ClearReference();
+		HV_LOG("after ClearReference");
+	}
 
+	LR_LOG("loading SliderSetFile");
 	SliderSetFile sset(fileName);
 	if (sset.fail()) {
 		wxLogError("Could not load slider set file '%s'!", fileName);
@@ -2754,9 +2779,11 @@ int OutfitProject::LoadReference(const std::string& fileName, const std::string&
 		return 1;
 	}
 
+	LR_LOG("SliderSetFile loaded OK");
 	std::string dataFolder = activeSet.GetDefaultDataFolder();
 	std::vector<std::string> dataNames = activeSet.GetLocalData(shapeName);
 
+	LR_LOG("calling sset.GetSet for refSet");
 	SliderSet refSet;
 	if (sset.GetSet(setName, refSet, appendNewSliders)) {
 		wxLogError("Could not load set '%s' from slider set file '%s'!", setName, fileName);
@@ -2764,14 +2791,19 @@ int OutfitProject::LoadReference(const std::string& fileName, const std::string&
 		return 1;
 	}
 
+	LR_LOG("refSet loaded OK");
 	refSet.SetBaseDataPath(GetProjectPath() + PathSepStr + "ShapeData");
 	std::string refFile = refSet.GetInputFileName();
+	LR_LOG("refFile='%s'", refFile);
 
 	std::fstream file;
 	PlatformUtil::OpenFileStream(file, refFile, std::ios::in | std::ios::binary);
 
+	LR_LOG("loading refNif");
+	HV_LOG("before refNif.Load");
 	NifFile refNif;
 	int error = refNif.Load(file);
+	HV_LOG("after refNif.Load");
 	if (error) {
 		if (error == 2) {
 			wxString errorText = wxString::Format(_("NIF version not supported!\n\nFile: %s\n%s"), refFile, refNif.GetHeader().GetVersion().GetVersionInfo());
@@ -2788,7 +2820,9 @@ int OutfitProject::LoadReference(const std::string& fileName, const std::string&
 		return 2;
 	}
 
+	LR_LOG("refNif loaded OK, calling ValidateNIF");
 	ValidateNIF(refNif, refFile);
+	LR_LOG("ValidateNIF done");
 
 	std::vector<std::string> shapes = refNif.GetShapeNames();
 	if (shapes.empty()) {
@@ -2810,53 +2844,81 @@ int OutfitProject::LoadReference(const std::string& fileName, const std::string&
 		return 4;
 	}
 
+	LR_LOG("shape='%s', calling ResolveTargetConflicts", shape);
 	ResolveTargetConflictsForIncomingShapes({{shape, refSet.ShapeToTarget(shape)}});
+	LR_LOG("calling sset.GetSet for activeSet");
 	sset.GetSet(setName, activeSet, appendNewSliders);
 	activeSet.SetBaseDataPath(GetProjectPath() + PathSepStr + "ShapeData");
+	LR_LOG("activeSet loaded OK");
 
 	std::vector<std::string> deletedShapes;
 
 	auto refShapeDup = workNif.FindBlockByName<NiShape>(shape);
+	LR_LOG("refShapeDup=%p (duplicate shape in workNif)", (void*)refShapeDup);
 	if (refShapeDup) {
 		// Delete shape with identical name
+		LR_LOG("deleting duplicate shape '%s' from workNif", shape);
 		DeleteShape(refShapeDup);
+		LR_LOG("duplicate DeleteShape done");
 		deletedShapes.push_back(shape);
 	}
 
 	// Add cloth data block of NIF to the list
+	LR_LOG("processing BSClothExtraData");
 	std::vector<BSClothExtraData*> clothDataBlocks = refNif.GetChildren<BSClothExtraData>(nullptr, true);
 	for (auto& cloth : clothDataBlocks)
 		clothData[refFile] = cloth->Clone();
 
 	refNif.GetHeader().DeleteBlockByType("BSClothExtraData");
+	LR_LOG("BSClothExtraData done");
 
 	if (workNif.IsValid()) {
+		LR_LOG("workNif.IsValid()=true, calling CloneShape");
+		HV_LOG("before CloneShape");
 		// Copy only reference shape
 		auto clonedShape = workNif.CloneShape(refShape, shape, &refNif);
+		HV_LOG("after CloneShape");
+		LR_LOG("CloneShape done (%p), calling workAnim.LoadFromNif", (void*)clonedShape);
 		workAnim.LoadFromNif(&workNif, clonedShape);
+		HV_LOG("after workAnim.LoadFromNif (IsValid branch)");
+		LR_LOG("workAnim.LoadFromNif done");
 	}
 	else {
+		LR_LOG("workNif.IsValid()=false, calling CopyFrom");
+		HV_LOG("before CopyFrom");
 		// Copy the full file
 		workNif.CopyFrom(refNif);
+		HV_LOG("after CopyFrom");
+		LR_LOG("CopyFrom done, calling workAnim.LoadFromNif");
 		workAnim.LoadFromNif(&workNif);
+		HV_LOG("after workAnim.LoadFromNif (CopyFrom branch)");
+		LR_LOG("workAnim.LoadFromNif done");
 
 		// Delete all except for reference
 		for (auto& s : workNif.GetShapes())
 			if (s->name != shape)
 				DeleteShape(s);
+		LR_LOG("extra shape cleanup done");
+		HV_LOG("after extra shape cleanup");
 	}
 
+	LR_LOG("setting baseShape via FindBlockByName");
 	baseShape = workNif.FindBlockByName<NiShape>(shape);
+	LR_LOG("baseShape=%p", (void*)baseShape);
 
+	LR_LOG("calling LoadSetDiffData");
 	if (mergeSliders)
 		activeSet.LoadSetDiffData(baseDiffData, shape);
 	else
 		activeSet.LoadSetDiffData(baseDiffData);
+	LR_LOG("LoadSetDiffData done");
 
 	bool hadLocalData = false;
+	LR_LOG("calling SetReferencedData");
 	activeSet.SetReferencedData(shape, false, &hadLocalData);
 	for (auto& dn : dataNames)
 		activeSet.SetReferencedDataByName(shape, dn, true);
+	LR_LOG("SetReferencedData done");
 
 	std::string refDataFolder = activeSet.GetDefaultDataFolder();
 	if (hadLocalData && !refDataFolder.empty() && refDataFolder != dataFolder) {
@@ -2870,6 +2932,7 @@ int OutfitProject::LoadReference(const std::string& fileName, const std::string&
 		activeSet.SetDataFolder(dataFolder);
 
 	// Remember reference source info for saved projects
+	LR_LOG("storing reference source info");
 	{
 		wxFileName refFileName(wxString::FromUTF8(fileName));
 		if (refFileName.IsRelative())
@@ -2883,18 +2946,33 @@ int OutfitProject::LoadReference(const std::string& fileName, const std::string&
 		mRefProjectName = setName;
 		mRefShapeName = shape;
 	}
+	LR_LOG("reference source info stored");
 
 	if (!deletedShapes.empty()) {
-		std::string shapesJoin = JoinStrings(deletedShapes, "; ");
-		wxMessageBox(wxString::Format("%s\n \n%s",
-									  _("The following shapes were deleted. Rename the duplicates yourself beforehand if you wish to keep them."),
-									  shapesJoin),
-					 _("Deleted Shapes"),
-					 wxOK | wxICON_WARNING,
-					 owner);
+		if (bSuppressLoadWarnings) {
+			// Skip the modal dialog during wizard operations — it pumps the message queue
+			// while the GL scene is partially rebuilt (no GL mesh for the new shape), which
+			// can corrupt the heap.  Log instead.
+			LR_LOG("suppressed 'deleted shapes' warning (bSuppressLoadWarnings=true); deleted: %s",
+				   JoinStrings(deletedShapes, "; "));
+		}
+		else {
+			LR_LOG("showing wxMessageBox for deleted shapes");
+			std::string shapesJoin = JoinStrings(deletedShapes, "; ");
+			wxMessageBox(wxString::Format("%s\n \n%s",
+										  _("The following shapes were deleted. Rename the duplicates yourself beforehand if you wish to keep them."),
+										  shapesJoin),
+						 _("Deleted Shapes"),
+						 wxOK | wxICON_WARNING,
+						 owner);
+			LR_LOG("wxMessageBox dismissed");
+		}
 	}
 
+	HV_LOG("LoadReference exit (returning 0)");
+	LR_LOG("LoadReference returning 0");
 	return 0;
+#undef LR_LOG
 }
 
 int OutfitProject::LoadFromSliderSet(const std::string& fileName, const std::string& sliderSetName, std::vector<std::string>* origShapeOrder) {
@@ -3323,7 +3401,7 @@ void OutfitProject::ConformShape(NiShape* shape, const ConformOptions& options) 
 	for (auto& m : mask)
 		maskIndices.insert(m.first);
 
-	morpher.BuildProximityCache(shape->name.get(), options.proximityRadius, &maskIndices);
+	morpher.BuildProximityCache(shape->name.get(), options.proximityRadius, &maskIndices, options.maxResults);
 
 	std::string refTarget = ShapeToTarget(baseShape->name.get());
 	std::string resultTarget = SliderDataTargetForShape(shape);

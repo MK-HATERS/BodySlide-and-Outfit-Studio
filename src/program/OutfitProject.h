@@ -207,6 +207,9 @@ public:
 	wxString mSFMorphPath;
 	wxString mSFMorphTargetShape;
 	bool bPose = false;
+	// When true, LoadReference suppresses "deleted shapes" wxMessageBox (avoids message-pump
+	// re-entrancy during wizard operations that leave the GL scene in a partially-rebuilt state).
+	bool bSuppressLoadWarnings = false;
 
 	// Reference source info (remembered when reference is loaded from an OSP)
 	std::string mRefProjectFile;    // OSP file path relative to project dir
