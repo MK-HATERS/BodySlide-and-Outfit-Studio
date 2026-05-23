@@ -253,6 +253,9 @@ public:
 	void AddEmptySlider(const std::string& newName);
 	void AddZapSlider(const std::string& newName, std::unordered_map<uint16_t, float>& verts, nifly::NiShape* shape);
 	void AddCombinedSlider(const std::string& newName);
+	// Creates a slider on the reference body using pre-computed per-vertex deltas.
+	// Used for Starfield mesh-based body conversion where no BodySlide sliders exist.
+	void AddReferenceBodyDeltaSlider(const std::string& sliderName, const std::unordered_map<uint16_t, nifly::Vector3>& delta);
 
 	nifly::NiShape* CreateNifShapeFromData(const std::string& shapeName,
 										   const std::vector<nifly::Vector3>* v,

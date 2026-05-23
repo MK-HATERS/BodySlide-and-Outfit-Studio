@@ -540,6 +540,21 @@ void OutfitProject::AddCombinedSlider(const std::string& newName) {
 	}
 }
 
+void OutfitProject::AddReferenceBodyDeltaSlider(const std::string& sliderName, const std::unordered_map<uint16_t, nifly::Vector3>& delta) {
+	if (!baseShape || delta.empty())
+		return;
+
+	size_t sliderID = activeSet.CreateSlider(sliderName);
+	std::string target = SliderDataTargetForShape(baseShape);
+	std::string shapeSlider = target + sliderName;
+	activeSet[sliderID].AddDataFile(target, shapeSlider, shapeSlider);
+	activeSet.AddShapeTarget(baseShape->name.get(), target);
+	baseDiffData.AddEmptySet(shapeSlider, target);
+
+	for (const auto& i : delta)
+		baseDiffData.SumDiff(shapeSlider, target, i.first, i.second);
+}
+
 NiShape* OutfitProject::CreateNifShapeFromData(
 	const std::string& shapeName, const std::vector<Vector3>* v, const std::vector<Triangle>* t, const std::vector<Vector2>* uv, const std::vector<Vector3>* norms) {
 	auto targetGame = (TargetGame)Config.GetIntValue("TargetGame");

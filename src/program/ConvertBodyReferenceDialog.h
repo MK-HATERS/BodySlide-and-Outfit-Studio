@@ -41,5 +41,10 @@ private:
 	int LoadReferenceTemplate(const wxString& refTemplate, bool mergeSliders, bool mergeZaps) const;
 	bool AlertProgressError(int error, const wxString& title, const wxString& message) const;
 
+	// Resolves the input NIF file path for a given reference template name.
+	std::string GetNifPathFromTemplate(const wxString& templateName) const;
+	// Returns the shape name (e.g. "Naked_M:0") stored in a reference template.
+	std::string GetShapeNameFromTemplate(const wxString& templateName) const;
+
 	wxDECLARE_EVENT_TABLE();
 };

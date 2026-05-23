@@ -9,7 +9,9 @@ See the included LICENSE file
 
 #include "../utils/ConfigDialogUtil.h"
 #include "../utils/ConfigurationManager.h"
+#include "../utils/PlatformUtil.h"
 
+#include <fstream>
 #include <regex>
 
 #include "OutfitStudio.h"
@@ -117,6 +119,39 @@ bool ConvertBodyReferenceDialog::Load() {
 	return RunWizard(pg1);
 }
 
+std::string ConvertBodyReferenceDialog::GetNifPathFromTemplate(const wxString& templateName) const {
+	std::string tmplName{templateName.ToUTF8()};
+	auto tmpl = find_if(refTemplates.begin(), refTemplates.end(), [&tmplName](const RefTemplate& rt) { return rt.GetName() == tmplName; });
+	if (tmpl == refTemplates.end())
+		return {};
+
+	std::string sourcePath;
+	if (wxFileName(wxString::FromUTF8(tmpl->GetSource())).IsRelative())
+		sourcePath = GetProjectPath() + PathSepStr + tmpl->GetSource();
+	else
+		sourcePath = tmpl->GetSource();
+
+	SliderSetFile sset(sourcePath);
+	if (sset.fail())
+		return {};
+
+	SliderSet refSet;
+	if (sset.GetSet(tmpl->GetSetName(), refSet))
+		return {};
+
+	refSet.SetBaseDataPath(GetProjectPath() + PathSepStr + "ShapeData");
+	return refSet.GetInputFileName();
+}
+
+std::string ConvertBodyReferenceDialog::GetShapeNameFromTemplate(const wxString& templateName) const {
+	std::string tmplName{templateName.ToUTF8()};
+	auto tmpl = find_if(refTemplates.begin(), refTemplates.end(), [&tmplName](const RefTemplate& rt) { return rt.GetName() == tmplName; });
+	if (tmpl == refTemplates.end())
+		return {};
+
+	return tmpl->GetShape();
+}
+
 void ConvertBodyReferenceDialog::ConvertBodyReference() const {
 	outfitStudio->StartProgress(_("Starting conversion..."));
 
@@ -196,32 +231,174 @@ void ConvertBodyReferenceDialog::ConvertBodyReference() const {
 	auto remainingOutfitShapes = project->GetWorkNif()->GetShapes(); // get outfit shapes
 
 	if (conversionRefTemplate != "None") {
-		outfitStudio->UpdateProgress(5, _("Loading conversion reference..."));
-		outfitStudio->StartSubProgress(5, 10);
-		if (AlertProgressError(LoadReferenceTemplate(conversionRefTemplate, mergeSliders, mergeZaps), _("Load Error"), "Failed to load conversion reference"))
-			return;
-		outfitStudio->EndProgress();
+		const auto targetGame = static_cast<TargetGame>(Config.GetIntValue("TargetGame"));
+		const bool isStarfield = (targetGame == SF);
 
-		outfitStudio->StartSubProgress(10, 20);
-		outfitStudio->CreateSetSliders();
-		outfitStudio->RefreshGUIFromProj();
+		if (isStarfield) {
+			// ── Starfield: mesh-based body conversion ─────────────────────────────
+			// Starfield bodies carry no BodySlide sliders; instead we compute the
+			// per-vertex delta between the two body NIFs, inject it as a temporary
+			// slider on the reference, conform outfit shapes to it, apply at 100 %,
+			// and bake the result – reusing the existing conform infrastructure.
 
-		outfitStudio->UpdateProgress(20, _("Conforming outfit parts..."));
-		outfitStudio->StartSubProgress(20, 35);
+			outfitStudio->UpdateProgress(3, _("Resolving body NIF paths..."));
 
-		// We shouldn't ever need to skip using default for this case as a correct conversion reference should always conform accurately
-		if (AlertProgressError(outfitStudio->ConformShapes(remainingOutfitShapes, true), _("Conform Error"), "Failed to conform shapes"))
-			return;
+			const std::string vanillaNifPath = GetNifPathFromTemplate(conversionRefTemplate);
+			const std::string customNifPath   = GetNifPathFromTemplate(newRefTemplate);
+			const std::string vanillaShapeName = GetShapeNameFromTemplate(conversionRefTemplate);
+			const std::string customShapeName  = GetShapeNameFromTemplate(newRefTemplate);
 
-		outfitStudio->UpdateProgress(35, _("Updating conversion Slider..."));
-		outfitStudio->SetSliderValue(project->activeSet.size() - 1, 100);
-		outfitStudio->ApplySliders();
+			if (vanillaNifPath.empty() || customNifPath.empty()) {
+				wxLogError("Starfield conversion: could not resolve body NIF paths.");
+				wxMessageBox(_("Could not resolve body NIF paths for Starfield conversion.\n"
+							   "Check that both reference templates point to valid slider sets."),
+							 _("Starfield Conversion Error"), wxICON_ERROR);
+				outfitStudio->EndProgress("", true);
+				outfitStudio->RefreshGUIFromProj();
+				return;
+			}
 
-		outfitStudio->UpdateProgress(40, _("Setting the base shape and removing the conversion reference"));
-		outfitStudio->SetBaseShape();
-		project->DeleteShape(project->GetBaseShape());
-		outfitStudio->DeleteSliders(mergeSliders, mergeZaps);
-		project->GetWorkAnim()->Clear();
+			// Load both NIFs (read-only, outside the project)
+			nifly::NifFile vanillaNif, customNif;
+			{
+				std::fstream vf, cf;
+				PlatformUtil::OpenFileStream(vf, vanillaNifPath, std::ios::in | std::ios::binary);
+				PlatformUtil::OpenFileStream(cf, customNifPath,  std::ios::in | std::ios::binary);
+				if (vanillaNif.Load(vf) || customNif.Load(cf)) {
+					wxLogError("Starfield conversion: failed to load body NIFs.");
+					wxMessageBox(_("Failed to load one or both body NIF files for Starfield conversion."),
+								 _("Starfield Conversion Error"), wxICON_ERROR);
+					outfitStudio->EndProgress("", true);
+					outfitStudio->RefreshGUIFromProj();
+					return;
+				}
+			}
+
+			// Resolve shapes (prefer named, fall back to first shape)
+			auto* vanillaShape = vanillaNif.FindBlockByName<nifly::NiShape>(vanillaShapeName);
+			auto* customShape  = customNif.FindBlockByName<nifly::NiShape>(customShapeName);
+			if (!vanillaShape) {
+				auto shapes = vanillaNif.GetShapes();
+				if (!shapes.empty()) vanillaShape = shapes[0];
+			}
+			if (!customShape) {
+				auto shapes = customNif.GetShapes();
+				if (!shapes.empty()) customShape = shapes[0];
+			}
+
+			if (!vanillaShape || !customShape) {
+				wxLogError("Starfield conversion: could not find body shapes in NIFs.");
+				wxMessageBox(_("Could not find body shapes in the NIF files."),
+							 _("Starfield Conversion Error"), wxICON_ERROR);
+				outfitStudio->EndProgress("", true);
+				outfitStudio->RefreshGUIFromProj();
+				return;
+			}
+
+			std::vector<nifly::Vector3> vanillaVerts, customVerts;
+			vanillaNif.GetVertsForShape(vanillaShape, vanillaVerts);
+			customNif.GetVertsForShape(customShape, customVerts);
+
+			if (vanillaVerts.empty() || customVerts.empty()) {
+				wxLogError("Starfield conversion: body shapes have no vertices.");
+				wxMessageBox(_("Body shapes have no vertices."), _("Starfield Conversion Error"), wxICON_ERROR);
+				outfitStudio->EndProgress("", true);
+				outfitStudio->RefreshGUIFromProj();
+				return;
+			}
+
+			if (vanillaVerts.size() != customVerts.size()) {
+				wxLogWarning("Starfield conversion: vertex count mismatch (vanilla=%zu, custom=%zu). "
+							 "Only %zu vertices will be used for the delta.",
+							 vanillaVerts.size(), customVerts.size(),
+							 std::min(vanillaVerts.size(), customVerts.size()));
+			}
+
+			// Build per-vertex delta (vanilla → custom)
+			std::unordered_map<uint16_t, nifly::Vector3> delta;
+			const size_t vtxCount = std::min(vanillaVerts.size(), customVerts.size());
+			for (size_t i = 0; i < vtxCount; i++) {
+				const nifly::Vector3 d = customVerts[i] - vanillaVerts[i];
+				if (d.x != 0.0f || d.y != 0.0f || d.z != 0.0f)
+					delta[static_cast<uint16_t>(i)] = d;
+			}
+
+			wxLogMessage("Starfield conversion: computed %zu non-zero vertex deltas.", delta.size());
+
+			if (!delta.empty()) {
+				// Load vanilla body as the project reference
+				outfitStudio->UpdateProgress(5, _("Loading conversion reference..."));
+				outfitStudio->StartSubProgress(5, 10);
+				if (AlertProgressError(LoadReferenceTemplate(conversionRefTemplate, mergeSliders, mergeZaps),
+									   _("Load Error"), "Failed to load conversion reference"))
+					return;
+				outfitStudio->EndProgress();
+
+				// Inject the delta as a temporary slider on the reference body
+				const std::string convSliderName = "__SFBodyConversion__";
+				project->AddReferenceBodyDeltaSlider(convSliderName, delta);
+
+				outfitStudio->StartSubProgress(10, 20);
+				outfitStudio->CreateSetSliders();
+				outfitStudio->RefreshGUIFromProj();
+
+				// Conform all outfit shapes to the conversion slider
+				outfitStudio->UpdateProgress(20, _("Conforming outfit shapes to conversion body..."));
+				outfitStudio->StartSubProgress(20, 35);
+				if (AlertProgressError(outfitStudio->ConformShapes(remainingOutfitShapes, true),
+									   _("Conform Error"), "Failed to conform shapes"))
+					return;
+
+				// Push the conversion slider to 100 % so outfit verts match the custom body
+				outfitStudio->UpdateProgress(35, _("Applying body conversion..."));
+				outfitStudio->SetSliderValue(convSliderName, 100);
+				outfitStudio->ApplySliders();
+
+				// Bake the transformed vertex positions into the base mesh
+				outfitStudio->UpdateProgress(40, _("Baking conversion into base mesh..."));
+				outfitStudio->SetBaseShape();
+				project->DeleteShape(project->GetBaseShape());
+				outfitStudio->DeleteSliders(mergeSliders, mergeZaps);
+				project->GetWorkAnim()->Clear();
+			}
+			else {
+				wxLogMessage("Starfield conversion: bodies are identical, skipping conversion step.");
+			}
+		}
+		else {
+			// ── Non-Starfield: original slider-based conversion ───────────────────
+			outfitStudio->UpdateProgress(5, _("Loading conversion reference..."));
+			outfitStudio->StartSubProgress(5, 10);
+			if (AlertProgressError(LoadReferenceTemplate(conversionRefTemplate, mergeSliders, mergeZaps),
+								   _("Load Error"), "Failed to load conversion reference"))
+				return;
+			outfitStudio->EndProgress();
+
+			outfitStudio->StartSubProgress(10, 20);
+			outfitStudio->CreateSetSliders();
+			outfitStudio->RefreshGUIFromProj();
+
+			outfitStudio->UpdateProgress(20, _("Conforming outfit parts..."));
+			outfitStudio->StartSubProgress(20, 35);
+
+			// We shouldn't ever need to skip using default for this case as a correct
+			// conversion reference should always conform accurately
+			if (AlertProgressError(outfitStudio->ConformShapes(remainingOutfitShapes, true),
+								   _("Conform Error"), "Failed to conform shapes"))
+				return;
+
+			outfitStudio->UpdateProgress(35, _("Updating conversion Slider..."));
+			if (project->activeSet.size() > 0) {
+				outfitStudio->SetSliderValue(project->activeSet.size() - 1, 100);
+				outfitStudio->ApplySliders();
+			}
+
+			outfitStudio->UpdateProgress(40, _("Setting the base shape and removing the conversion reference"));
+			outfitStudio->SetBaseShape();
+			project->DeleteShape(project->GetBaseShape());
+			outfitStudio->DeleteSliders(mergeSliders, mergeZaps);
+			project->GetWorkAnim()->Clear();
+		}
 	}
 	else {
 		outfitStudio->UpdateProgress(5, _("Skipping conversion reference..."));
