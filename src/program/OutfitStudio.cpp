@@ -5662,6 +5662,102 @@ void OutfitStudioFrame::OnMakeConvRef(wxCommandEvent& WXUNUSED(event)) {
 	CreateSetSliders();
 }
 
+// ── SliderCheckListDialog ─────────────────────────────────────────────────────
+// wxCheckListBox with wxLB_EXTENDED so Ctrl+click / Shift+click extend the
+// highlight (selection state).  Space toggles the *check* state for every
+// currently highlighted item.  Buttons allow bulk check/uncheck/invert.
+class SliderCheckListDialog : public wxDialog {
+public:
+	SliderCheckListDialog(wxWindow* parent,
+	                      const wxString& message,
+	                      const wxString& title,
+	                      const wxArrayString& items,
+	                      const wxArrayInt& preChecked)
+		: wxDialog(parent, wxID_ANY, title, wxDefaultPosition, wxSize(420, 520),
+		           wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER)
+	{
+		auto* vbox = new wxBoxSizer(wxVERTICAL);
+
+		// Description label
+		auto* lbl = new wxStaticText(this, wxID_ANY, message);
+		lbl->Wrap(390);
+		vbox->Add(lbl, 0, wxEXPAND | wxALL, 8);
+
+		// Check-list with extended (Ctrl/Shift) highlight selection
+		m_list = new wxCheckListBox(this, wxID_ANY,
+		                            wxDefaultPosition, wxDefaultSize,
+		                            items, wxLB_EXTENDED);
+		for (int idx : preChecked)
+			m_list->Check(static_cast<unsigned>(idx), true);
+		vbox->Add(m_list, 1, wxEXPAND | wxLEFT | wxRIGHT, 8);
+
+		// Space key: toggle check for all highlighted items
+		m_list->Bind(wxEVT_KEY_DOWN, &SliderCheckListDialog::OnListKey, this);
+
+		// Bulk-action buttons
+		auto* btnRow    = new wxBoxSizer(wxHORIZONTAL);
+		auto* btnAll    = new wxButton(this, wxID_ANY, _("Select All"));
+		auto* btnNone   = new wxButton(this, wxID_ANY, _("Deselect All"));
+		auto* btnInvert = new wxButton(this, wxID_ANY, _("Invert"));
+		btnRow->Add(btnAll,    0, wxRIGHT, 4);
+		btnRow->Add(btnNone,   0, wxRIGHT, 4);
+		btnRow->Add(btnInvert, 0);
+		vbox->Add(btnRow, 0, wxLEFT | wxRIGHT | wxTOP, 8);
+
+		btnAll->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+			for (unsigned i = 0; i < m_list->GetCount(); ++i)
+				m_list->Check(i, true);
+		});
+		btnNone->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+			for (unsigned i = 0; i < m_list->GetCount(); ++i)
+				m_list->Check(i, false);
+		});
+		btnInvert->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+			for (unsigned i = 0; i < m_list->GetCount(); ++i)
+				m_list->Check(i, !m_list->IsChecked(i));
+		});
+
+		// Standard OK / Cancel
+		vbox->Add(CreateStdDialogButtonSizer(wxOK | wxCANCEL), 0,
+		          wxEXPAND | wxALL, 8);
+
+		SetSizerAndFit(vbox);
+		SetMinSize(wxSize(350, 300));
+	}
+
+	// Returns indices of items whose checkbox is checked (not just highlighted).
+	wxArrayInt GetCheckedItems() const {
+		wxArrayInt result;
+		for (unsigned i = 0; i < m_list->GetCount(); ++i)
+			if (m_list->IsChecked(i))
+				result.Add(static_cast<int>(i));
+		return result;
+	}
+
+private:
+	wxCheckListBox* m_list = nullptr;
+
+	void OnListKey(wxKeyEvent& evt) {
+		if (evt.GetKeyCode() == WXK_SPACE) {
+			wxArrayInt sel;
+			m_list->GetSelections(sel);
+			if (!sel.IsEmpty()) {
+				// If every highlighted item is already checked, uncheck all; else check all.
+				bool allChecked = true;
+				for (int idx : sel)
+					if (!m_list->IsChecked(static_cast<unsigned>(idx))) {
+						allChecked = false;
+						break;
+					}
+				for (int idx : sel)
+					m_list->Check(static_cast<unsigned>(idx), !allChecked);
+			}
+			return; // Suppress the default single-item toggle that wxCheckListBox would do
+		}
+		evt.Skip();
+	}
+};
+
 void OutfitStudioFrame::OnFitSlidersToShape(wxCommandEvent& WXUNUSED(event)) {
 	// ── Guard checks ─────────────────────────────────────────────────────────
 	auto* nif = project->GetWorkNif();
@@ -5736,22 +5832,24 @@ void OutfitStudioFrame::OnFitSlidersToShape(wxCommandEvent& WXUNUSED(event)) {
 			preSelected.Add(static_cast<int>(li));
 	}
 
-	wxMultiChoiceDialog dlg(
+	SliderCheckListDialog dlg(
 		this,
 		_("Select which sliders to include in the fit.\n"
-		  "Deselect anatomy-specific sliders (penis, erection, nipples, etc.)\n"
-		  "that don't exist on the target body.\n\n"
+		  "Deselect anatomy sliders (penis, erection, nipples, etc.) absent\n"
+		  "from the target body.\n\n"
+		  "Ctrl+click / Shift+click to highlight a range, then Space to\n"
+		  "toggle check state for all highlighted items.\n"
 		  "Your selection is remembered for the next run."),
-		_("Fit Sliders to Shape — Select Sliders"),
-		sliderChoices);
-	dlg.SetSelections(preSelected);
+		_("Fit Sliders to Shape -- Select Sliders"),
+		sliderChoices,
+		preSelected);
 
 	if (dlg.ShowModal() != wxID_OK)
 		return;
 
-	wxArrayInt selected = dlg.GetSelections();
+	wxArrayInt selected = dlg.GetCheckedItems();
 	if (selected.IsEmpty()) {
-		wxMessageBox(_("No sliders selected — nothing to fit."),
+		wxMessageBox(_("No sliders selected -- nothing to fit."),
 		             _("Fit Sliders to Shape"), wxICON_INFORMATION);
 		return;
 	}
