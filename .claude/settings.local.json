@@ -1,7 +1,12 @@
 {
   "permissions": {
     "allow": [
-      "Bash(cmake --build build --target OutfitStudio -- -j4)"
+      "Bash(cmake --build build --target OutfitStudio -- -j4)",
+      "PowerShell(cmd /c dir \"F:\\\\ModManager\\\\Mo2-Starfield\\\\Data\\\\mods\\\\BodySlide Studio\" /s /b 2>&1)",
+      "PowerShell(cmd /c dir \"F:\\\\ModManager\\\\Mo2-Starfield\\\\Data\\\\mods\\\\BodySlide Studio Output\" /s /b 2>&1)",
+      "PowerShell(cmd /c dir \"F:\\\\ModManager\\\\Mo2-Starfield\\\\Data\\\\mods\\\\BodySlide Studio Output\\\\Tools\\\\BodySlide\\\\SliderPresets\" /b 2>&1)",
+      "PowerShell(cmd /c dir \"F:\\\\ModManager\\\\Mo2-Starfield\\\\Data\\\\mods\\\\BodySlide Studio Output\\\\Tools\\\\BodySlide\\\\SliderCategories\" /b 2>&1)",
+      "PowerShell(& cmd /c \"dir `\"F:\\\\ModManager\\\\Mo2-Starfield\\\\Data\\\\mods\\\\BodySlide Studio Output\\\\Tools\\\\BodySlide\\\\SliderPresets`\" /b\")"
     ]
   }
 }
