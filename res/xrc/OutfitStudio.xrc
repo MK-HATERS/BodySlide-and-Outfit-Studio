@@ -2049,6 +2049,11 @@
 				<help>Fixes clipping of outfit vertices that penetrate the reference shape for the active slider.</help>
 			</object>
 			<object class="separator" />
+			<object class="wxMenuItem" name="fitSlidersToShape">
+				<label>Fit Reference Sliders to Shape...</label>
+				<help>Automatically sets all reference body sliders to best approximate a selected outfit shape. Review the result, then use File > Make Conversion Reference.</help>
+			</object>
+			<object class="separator" />
 			<object class="wxMenuItem" name="saveBaseShape">
 				<label>Set Base Shape</label>
 				<help>Set the current outfit shape as the base shape and clear slider data.</help>

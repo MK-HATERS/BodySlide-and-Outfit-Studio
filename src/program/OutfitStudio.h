@@ -1309,6 +1309,7 @@ private:
 
 	void OnSetBaseShape(wxCommandEvent& event);
 	void OnMakeConvRef(wxCommandEvent& event);
+	void OnFitSlidersToShape(wxCommandEvent& event);
 
 	void OnImportNIF(wxCommandEvent& event);
 	void OnExportNIF(wxCommandEvent& event);

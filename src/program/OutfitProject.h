@@ -260,6 +260,15 @@ public:
 	// Used for Starfield mesh-based body conversion where no BodySlide sliders exist.
 	void AddReferenceBodyDeltaSlider(const std::string& sliderName, const std::unordered_map<uint16_t, nifly::Vector3>& delta);
 
+	// Solves for the set of active-slider weights (curValue scale: 1.0 == 100%) that
+	// minimises the vertex-distance between the morphed reference body and targetShape.
+	// sliderMask[i] == true means slider i participates in the solve; false == excluded.
+	// sliderMask must have the same length as activeSet (use SliderCount()).
+	// Returns one weight per active slider (0 for excluded sliders), or empty on failure.
+	// Intended use: show a dialog to build sliderMask, apply the returned weights,
+	// inspect the result, then call File > Make Conversion Reference to bake them.
+	std::vector<float> FitSlidersToShape(nifly::NiShape* targetShape, const std::vector<bool>& sliderMask);
+
 	nifly::NiShape* CreateNifShapeFromData(const std::string& shapeName,
 										   const std::vector<nifly::Vector3>* v,
 										   const std::vector<nifly::Triangle>* t = nullptr,

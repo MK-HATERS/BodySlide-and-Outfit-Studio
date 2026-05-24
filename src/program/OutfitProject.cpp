@@ -568,6 +568,165 @@ void OutfitProject::AddReferenceBodyDeltaSlider(const std::string& sliderName, c
 		baseDiffData.SumDiff(shapeSlider, target, i.first, i.second);
 }
 
+std::vector<float> OutfitProject::FitSlidersToShape(NiShape* targetShape, const std::vector<bool>& sliderMask) {
+	if (!baseShape || !targetShape || IsBaseShape(targetShape))
+		return {};
+
+	const size_t M = activeSet.size();
+	if (M == 0 || sliderMask.size() != M)
+		return {};
+
+	// ── 1. Reference body base verts (all sliders at zero) ──────────────────
+	std::vector<Vector3> refBase;
+	if (!workNif.GetVertsForShape(baseShape, refBase) || refBase.empty())
+		return {};
+
+	// ── 2. Target shape verts (the body we want to approximate) ─────────────
+	std::vector<Vector3> tgtVerts;
+	if (!workNif.GetVertsForShape(targetShape, tgtVerts) || tgtVerts.empty())
+		return {};
+
+	const size_t Nref = refBase.size();
+	const size_t Ntgt = tgtVerts.size();
+
+	// ── 3. Vertex correspondence: refBase[v] -> tgtVerts[corr[v]] ───────────
+	// If vertex counts match assume same topology (1-to-1).
+	// Otherwise fall back to nearest-neighbour O(Nref * Ntgt).
+	std::vector<uint16_t> corr(Nref);
+	if (Nref == Ntgt) {
+		for (size_t v = 0; v < Nref; v++)
+			corr[v] = static_cast<uint16_t>(v);
+	}
+	else {
+		for (size_t v = 0; v < Nref; v++) {
+			float bestDist = FLT_MAX;
+			uint16_t bestIdx = 0;
+			const auto& rv = refBase[v];
+			for (size_t u = 0; u < Ntgt; u++) {
+				const auto& tv = tgtVerts[u];
+				float dx = rv.x - tv.x, dy = rv.y - tv.y, dz = rv.z - tv.z;
+				float d = dx * dx + dy * dy + dz * dz;
+				if (d < bestDist) {
+					bestDist = d;
+					bestIdx = static_cast<uint16_t>(u);
+				}
+			}
+			corr[v] = bestIdx;
+		}
+	}
+
+	// ── 4. delta[v] = tgt[corr[v]] − refBase[v] ─────────────────────────────
+	std::vector<Vector3> delta(Nref);
+	for (size_t v = 0; v < Nref; v++) {
+		const auto& t = tgtVerts[corr[v]];
+		delta[v] = {t.x - refBase[v].x, t.y - refBase[v].y, t.z - refBase[v].z};
+	}
+
+	// ── 5. Fetch sparse diff-data pointers for every slider ──────────────────
+	// sliderMask[i] == false means the caller explicitly excluded this slider
+	// (e.g. anatomy-specific sliders chosen via dialog).
+	// Zap and clamp sliders are always excluded regardless of the mask.
+	std::string target = SliderDataTargetForShape(baseShape);
+	std::vector<TargetDataDiffs*> diffPtrs(M, nullptr);
+	for (size_t i = 0; i < M; i++) {
+		if (!sliderMask[i] || activeSet[i].bZap || activeSet[i].bClamp)
+			continue;
+		std::string key = activeSet[i].TargetDataName(target);
+		if (!key.empty())
+			diffPtrs[i] = baseDiffData.GetDiffSet(key);
+	}
+
+	// ── 6. Build normal equations (AᵀA + λI)w = Aᵀb ─────────────────────────
+	// AᵀA is M×M, Aᵀb is M×1.  We build them sparsely: for each vertex
+	// that appears in diffPtrs[i], we accumulate dot products with diffPtrs[j]
+	// and with delta[v].
+	const double lambda = 1e-4; // Tikhonov regularisation — keeps ill-conditioned
+	                             // (correlated) sliders from blowing up.
+	std::vector<double> AtA(M * M, 0.0);
+	std::vector<double> Atb(M, 0.0);
+
+	for (size_t i = 0; i < M; i++) {
+		if (!diffPtrs[i])
+			continue;
+		const auto& diA = *diffPtrs[i];
+
+		for (const auto& [vi, dvA] : diA) {
+			if (vi >= static_cast<uint16_t>(Nref))
+				continue;
+
+			const auto& delt = delta[vi];
+
+			// Aᵀb[i] += diffA · delta
+			Atb[i] += static_cast<double>(dvA.x) * delt.x
+			         + static_cast<double>(dvA.y) * delt.y
+			         + static_cast<double>(dvA.z) * delt.z;
+
+			// AᵀA[i][j] += diffA · diffB  (symmetric; only iterate j >= i)
+			for (size_t j = i; j < M; j++) {
+				if (!diffPtrs[j])
+					continue;
+				auto it = diffPtrs[j]->find(vi);
+				if (it == diffPtrs[j]->end())
+					continue;
+				const auto& dvB = it->second;
+				double dot = static_cast<double>(dvA.x) * dvB.x
+				           + static_cast<double>(dvA.y) * dvB.y
+				           + static_cast<double>(dvA.z) * dvB.z;
+				AtA[i * M + j] += dot;
+				if (j != i)
+					AtA[j * M + i] += dot;
+			}
+		}
+
+		// Regularisation diagonal
+		AtA[i * M + i] += lambda;
+	}
+
+	// ── 7. Gauss-Jordan solve with partial pivoting ───────────────────────────
+	// Augmented matrix [AᵀA | Aᵀb], M rows × (M+1) cols.
+	std::vector<std::vector<double>> aug(M, std::vector<double>(M + 1, 0.0));
+	for (size_t i = 0; i < M; i++) {
+		for (size_t j = 0; j < M; j++)
+			aug[i][j] = AtA[i * M + j];
+		aug[i][M] = Atb[i];
+	}
+
+	for (size_t col = 0; col < M; col++) {
+		// Partial pivot
+		size_t maxRow = col;
+		double maxVal = std::abs(aug[col][col]);
+		for (size_t row = col + 1; row < M; row++) {
+			if (std::abs(aug[row][col]) > maxVal) {
+				maxVal = std::abs(aug[row][col]);
+				maxRow = row;
+			}
+		}
+		if (maxRow != col)
+			std::swap(aug[col], aug[maxRow]);
+
+		if (std::abs(aug[col][col]) < 1e-12)
+			continue; // effectively zero column — skip (under-constrained slider)
+
+		const double pivot = aug[col][col];
+		for (size_t row = 0; row < M; row++) {
+			if (row == col)
+				continue;
+			const double factor = aug[row][col] / pivot;
+			for (size_t k = col; k <= M; k++)
+				aug[row][k] -= factor * aug[col][k];
+		}
+	}
+
+	// ── 8. Extract solution and clamp to ±200% ───────────────────────────────
+	std::vector<float> weights(M, 0.0f);
+	for (size_t i = 0; i < M; i++) {
+		if (std::abs(aug[i][i]) > 1e-12)
+			weights[i] = std::clamp(static_cast<float>(aug[i][M] / aug[i][i]), -2.0f, 2.0f);
+	}
+
+	return weights;
+}
+
 NiShape* OutfitProject::CreateNifShapeFromData(
 	const std::string& shapeName, const std::vector<Vector3>* v, const std::vector<Triangle>* t, const std::vector<Vector2>* uv, const std::vector<Vector3>* norms) {
 	auto targetGame = (TargetGame)Config.GetIntValue("TargetGame");

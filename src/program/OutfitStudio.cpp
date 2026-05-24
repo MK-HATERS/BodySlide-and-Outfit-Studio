@@ -150,6 +150,7 @@ wxBEGIN_EVENT_TABLE(OutfitStudioFrame, wxFrame)
 
 	EVT_MENU(XRCID("saveBaseShape"), OutfitStudioFrame::OnSetBaseShape)
 	EVT_MENU(XRCID("makeConvRef"), OutfitStudioFrame::OnMakeConvRef)
+	EVT_MENU(XRCID("fitSlidersToShape"), OutfitStudioFrame::OnFitSlidersToShape)
 
 	EVT_MENU(XRCID("importNIF"), OutfitStudioFrame::OnImportNIF)
 	EVT_MENU(XRCID("exportNIF"), OutfitStudioFrame::OnExportNIF)
@@ -5659,6 +5660,157 @@ void OutfitStudioFrame::OnMakeConvRef(wxCommandEvent& WXUNUSED(event)) {
 	MenuExitSliderEdit();
 
 	CreateSetSliders();
+}
+
+void OutfitStudioFrame::OnFitSlidersToShape(wxCommandEvent& WXUNUSED(event)) {
+	// ── Guard checks ─────────────────────────────────────────────────────────
+	auto* nif = project->GetWorkNif();
+	if (!nif)
+		return;
+
+	std::vector<NiShape*> fitCandidates;
+	for (auto* s : nif->GetShapes())
+		if (s && !project->IsBaseShape(s))
+			fitCandidates.push_back(s);
+
+	if (fitCandidates.empty()) {
+		wxMessageBox(
+			_("No outfit shape found in the scene.\n\n"
+			  "Import the body you want to fit to (e.g. the vanilla body NIF) as an outfit\n"
+			  "shape first, then run this again."),
+			_("Fit Sliders to Shape"), wxICON_INFORMATION);
+		return;
+	}
+
+	const size_t M = project->SliderCount();
+	if (M == 0) {
+		wxMessageBox(
+			_("The reference body has no sliders loaded.\n\n"
+			  "Load a reference body that has slider data before fitting."),
+			_("Fit Sliders to Shape"), wxICON_INFORMATION);
+		return;
+	}
+
+	// ── Target shape ─────────────────────────────────────────────────────────
+	NiShape* targetShape = fitCandidates[0];
+	if (fitCandidates.size() > 1) {
+		wxArrayString choices;
+		for (auto* s : fitCandidates)
+			choices.Add(wxString::FromUTF8(s->name.get()));
+		int idx = wxGetSingleChoiceIndex(
+			_("Select the shape to fit the reference sliders to:"),
+			_("Fit Sliders to Shape"), choices, this);
+		if (idx < 0)
+			return;
+		targetShape = fitCandidates[idx];
+	}
+
+	// ── Build slider list for the selection dialog ────────────────────────────
+	// Zap and clamp sliders are always excluded (FitSlidersToShape ignores them
+	// regardless of the mask), so we omit them from the list entirely.
+	// sliderIdxInActiveSet maps dialog-list index -> activeSet index.
+	wxArrayString sliderChoices;
+	std::vector<size_t> sliderIdxInActiveSet;
+	for (size_t i = 0; i < M; i++) {
+		if (project->SliderZap(i) || project->SliderClamp(i))
+			continue;
+		sliderChoices.Add(wxString::FromUTF8(project->GetSliderName(i)));
+		sliderIdxInActiveSet.push_back(i);
+	}
+
+	if (sliderChoices.IsEmpty()) {
+		wxMessageBox(
+			_("No eligible sliders found (all sliders are zap or clamp type)."),
+			_("Fit Sliders to Shape"), wxICON_INFORMATION);
+		return;
+	}
+
+	// Pre-select everything from the last run (stored as a static set of names).
+	// First run: select all.
+	static std::set<std::string> fitSliderExclusions; // names excluded last time
+
+	wxArrayInt preSelected;
+	for (size_t li = 0; li < sliderChoices.size(); li++) {
+		std::string name = sliderChoices[li].ToStdString();
+		if (fitSliderExclusions.find(name) == fitSliderExclusions.end())
+			preSelected.Add(static_cast<int>(li));
+	}
+
+	wxMultiChoiceDialog dlg(
+		this,
+		_("Select which sliders to include in the fit.\n"
+		  "Deselect anatomy-specific sliders (penis, erection, nipples, etc.)\n"
+		  "that don't exist on the target body.\n\n"
+		  "Your selection is remembered for the next run."),
+		_("Fit Sliders to Shape — Select Sliders"),
+		sliderChoices);
+	dlg.SetSelections(preSelected);
+
+	if (dlg.ShowModal() != wxID_OK)
+		return;
+
+	wxArrayInt selected = dlg.GetSelections();
+	if (selected.IsEmpty()) {
+		wxMessageBox(_("No sliders selected — nothing to fit."),
+		             _("Fit Sliders to Shape"), wxICON_INFORMATION);
+		return;
+	}
+
+	// Build the mask (activeSet-indexed) and update the exclusion memory
+	std::vector<bool> sliderMask(M, false);
+	std::set<std::string> nowSelected;
+	for (int li : selected) {
+		sliderMask[sliderIdxInActiveSet[li]] = true;
+		nowSelected.insert(sliderChoices[li].ToStdString());
+	}
+	fitSliderExclusions.clear();
+	for (size_t li = 0; li < sliderChoices.size(); li++) {
+		std::string name = sliderChoices[li].ToStdString();
+		if (nowSelected.find(name) == nowSelected.end())
+			fitSliderExclusions.insert(name);
+	}
+
+	// ── Run the fit ───────────────────────────────────────────────────────────
+	wxLogMessage("FitSlidersToShape: fitting to '%s' using %zu/%zu eligible sliders...",
+	             wxString::FromUTF8(targetShape->name.get()),
+	             selected.GetCount(), sliderChoices.size());
+
+	auto weights = project->FitSlidersToShape(targetShape, sliderMask);
+	if (weights.empty()) {
+		wxMessageBox(
+			_("Could not compute a slider fit.\n\n"
+			  "Make sure the reference body has slider diff data loaded."),
+			_("Fit Sliders to Shape"), wxICON_ERROR);
+		return;
+	}
+
+	// Zero every slider first so non-participating sliders are cleanly reset
+	for (size_t i = 0; i < M; i++)
+		SetSliderValue(i, 0);
+
+	// Apply the fitted weights
+	int nonZero = 0;
+	for (size_t i = 0; i < weights.size(); i++) {
+		if (!sliderMask[i])
+			continue; // excluded — already zeroed above
+		int intVal = static_cast<int>(std::round(weights[i] * 100.0f));
+		SetSliderValue(i, intVal);
+		if (std::abs(weights[i]) > 0.005f)
+			nonZero++;
+	}
+	ApplySliders();
+
+	wxLogMessage("FitSlidersToShape: done -- %d sliders set to non-zero values.",
+	             nonZero);
+
+	wxMessageBox(
+		wxString::Format(
+			_("Slider fit complete: %d slider(s) set to non-zero values.\n\n"
+			  "Review the result in the viewport and fine-tune manually.\n"
+			  "Run this again to try a different slider selection.\n"
+			  "When satisfied, use File -> Make Conversion Reference."),
+			nonZero),
+		_("Fit Sliders to Shape"), wxICON_INFORMATION);
 }
 
 void OutfitStudioFrame::OnSelectSliders(wxCommandEvent& event) {
