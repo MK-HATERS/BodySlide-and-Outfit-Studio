@@ -102,8 +102,8 @@ void NifBlockInspector::AppendNifBlocks(const wxTreeItemId& root,
 	auto& hdr = nif->GetHeader();
 	const uint32_t numBlocks = hdr.GetNumBlocks();
 
-	wxTreeItemId nifRoot = tree->AppendItem(root, wxString::Format("%s  (%u blocks)",
-		rootLabel, numBlocks));
+	wxTreeItemId nifRoot = tree->AppendItem(root,
+		rootLabel + wxString::Format("  (%u blocks)", numBlocks));
 
 	bool anyVisible = false;
 	const bool filtering = !filterText.IsEmpty();
@@ -120,10 +120,8 @@ void NifBlockInspector::AppendNifBlocks(const wxTreeItemId& root,
 		wxString detail = BlockDetail(block, nif);
 
 		// Build display label
-		wxString label = wxString::Format("[%03u]  %-36s  %s",
-			i,
-			typeName + (blockName.IsEmpty() ? "" : "  \"" + blockName + "\""),
-			detail);
+		wxString nameStr = typeName + (blockName.IsEmpty() ? wxString() : "  \"" + blockName + "\"");
+		wxString label = wxString::Format("[%03u]  ", i) + nameStr + "  " + detail;
 
 		// Filter
 		if (filtering) {
@@ -151,7 +149,7 @@ void NifBlockInspector::AppendNifBlocks(const wxTreeItemId& root,
 					meshPath = wxString::Format("<slot %u — no path>", (unsigned)m);
 
 				tree->AppendItem(blockNode,
-					wxString::Format("  Mesh[%u]  %s  (%s)", (unsigned)m, meshPath, lodTag));
+					wxString::Format("  Mesh[%u]  ", (unsigned)m) + meshPath + "  (" + lodTag + ")");
 			}
 		}
 
