@@ -146,7 +146,7 @@ void NifBlockInspector::AppendNifBlocks(const wxTreeItemId& root,
 					m == 2 ? "LOD2"        : "LOD3";
 
 				if (meshPath.IsEmpty())
-					meshPath = wxString::Format("<slot %u — no path>", (unsigned)m);
+					meshPath = wxString::Format("<slot %u - no path>", (unsigned)m);
 
 				tree->AppendItem(blockNode,
 					wxString::Format("  Mesh[%u]  ", (unsigned)m) + meshPath + "  (" + lodTag + ")");
