@@ -5362,22 +5362,39 @@ void OutfitStudioFrame::OnImportNIFFromArchive(wxCommandEvent& WXUNUSED(event)) 
 	};
 	std::vector<ArchiveNif> allNifs;
 
-	for (FSArchiveFile* archive : FSManager::archiveList()) {
+	auto archiveList = FSManager::archiveList();
+	int archivesScanned = 0;
+
+	for (FSArchiveFile* archive : archiveList) {
 		if (!archive) continue;
+		++archivesScanned;
 		std::vector<std::string> tree;
 		archive->fileTree(tree);
 		for (auto& f : tree) {
+			// Skip the first entry which is the archive name itself, and folder entries
 			if (f.size() >= 4 && ToLower(f.substr(f.size() - 4)) == ".nif")
 				allNifs.push_back({f, archive});
 		}
 	}
 
 	if (allNifs.empty()) {
-		wxMessageBox(
-			_("No NIF files found in open archives.\n\n"
-			  "Make sure the game data path is configured and game archives are listed in Settings."),
-			_("Import from Archive"),
-			wxOK | wxICON_INFORMATION, this);
+		if (archivesScanned == 0) {
+			wxMessageBox(
+				_("No archives are currently loaded.\n\n"
+				  "Go to Settings and check the archive files you want to load under 'Data Files'."),
+				_("Import from Archive"),
+				wxOK | wxICON_INFORMATION, this);
+		}
+		else {
+			wxMessageBox(
+				wxString::Format(
+					_("No NIF files found in the %d loaded archive(s).\n\n"
+					  "The checked archives (texture/shader/sound archives) do not contain mesh files.\n"
+					  "In Settings > Data Files, also check any 'Main' or 'Meshes' archives for the game and DLCs."),
+					archivesScanned),
+				_("Import from Archive"),
+				wxOK | wxICON_INFORMATION, this);
+		}
 		return;
 	}
 
