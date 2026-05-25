@@ -76,9 +76,21 @@ bool SFMorphFile::Read(const std::string& fileName) {
 	if (memcmp(hdr, &magic, 4) != 0)
 		return false;
 
-	morphFile.read((char*)&numAxis, sizeof(numAxis)); // Unknown. Always 3?
+	morphFile.read((char*)&numAxis, sizeof(numAxis));
 	morphFile.read((char*)&numVertices, sizeof(numVertices));
 	morphFile.read((char*)&numShapeKeys, sizeof(numShapeKeys));
+
+	// numAxis controls how many axis-components each morph entry carries.
+	// The only observed value in vanilla Starfield is 3 (X/Y/Z position delta).
+	// A value of 4 has been seen in some community-reverse-engineered files and may
+	// encode an additional channel (bitangent sign or a second blend axis).  We do
+	// not yet know its layout, so reject it gracefully rather than silently
+	// misinterpreting the data stream.
+	if (numAxis != 3) {
+		// Return false so the caller falls back to a .tri read or skips the morph.
+		// When we reverse-engineer axis-4 files this guard can be relaxed.
+		return false;
+	}
 
 	for (size_t i = 0; i < numShapeKeys; i++) {
 		uint32_t morphNameLength = 0;
@@ -140,6 +152,10 @@ bool SFMorphFile::Write(const std::string& fileName) {
 }
 
 bool SFMorphFile::FileToCacheData() {
+	// Reject axis counts we don't understand — see Read() for rationale.
+	if (numAxis != 3)
+		return false;
+
 	morphDataRawUnpacked.resize(numMorphData);
 
 	for (size_t i = 0; i < numMorphData; i++) {

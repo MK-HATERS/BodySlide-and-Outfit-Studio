@@ -260,7 +260,8 @@ public:
 					  std::vector<uint16_t>& zapidx,
 					  std::vector<nifly::Vector2>* uvs = nullptr);
 	bool WriteMorphTRI(const std::string& triPath, SliderSet& sliderSet, nifly::NifFile& nif, std::unordered_map<std::string, std::vector<uint16_t>>& zapIndices);
-	bool WriteSFMorphFile(const std::string& morphFolder, SliderSet& sliderSet, nifly::NifFile& nif, std::unordered_map<std::string, std::vector<uint16_t>>& zapIndices);
+	// outputDataPath: game data root (e.g. "F:/Data/") — used to derive LOD morph.dat paths.
+	bool WriteSFMorphFile(const std::string& morphFolder, const std::string& outputDataPath, SliderSet& sliderSet, nifly::NifFile& nif, std::unordered_map<std::string, std::vector<uint16_t>>& zapIndices);
 
 	void CopySliderValues(bool toHigh);
 	void CopyPreviewWeightToSliders();

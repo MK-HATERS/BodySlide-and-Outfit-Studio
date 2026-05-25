@@ -2033,6 +2033,10 @@
 				<label>Properties...</label>
 				<help>Opens the properties dialog for shader, texture and more settings of the selected shape.</help>
 			</object>
+			<object class="wxMenuItem" name="btnNifBlockInspector">
+				<label>NIF Block Inspector...</label>
+				<help>Open the NIF Block Inspector to view all blocks, LOD mesh paths, and shader info for the loaded NIF.</help>
+			</object>
 		</object>
 		<object class="wxMenu" name="menuSlider">
 			<label>Slider</label>
@@ -2385,6 +2389,11 @@
 				<help>Display vertex colors on models.</help>
 				<checked>0</checked>
 				<checkable>1</checkable>
+			</object>
+			<object class="separator" />
+			<object class="wxMenuItem" name="btnNifBlockInspector">
+				<label>NIF Block Inspector\tCtrl+I</label>
+				<help>Open the NIF Block Inspector to view all blocks, LOD mesh paths, and shader info for the loaded NIF.</help>
 			</object>
 		</object>
 	</object>

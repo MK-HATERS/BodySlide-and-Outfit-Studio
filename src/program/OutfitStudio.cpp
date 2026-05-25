@@ -301,6 +301,7 @@ wxBEGIN_EVENT_TABLE(OutfitStudioFrame, wxFrame)
 	EVT_MENU(XRCID("deleteUnreferencedNodes"), OutfitStudioFrame::OnDeleteUnreferencedNodes)
 	EVT_MENU(XRCID("removeSkinning"), OutfitStudioFrame::OnRemoveSkinning)
 	EVT_MENU(XRCID("shapeProperties"), OutfitStudioFrame::OnShapeProperties)
+	EVT_MENU(XRCID("btnNifBlockInspector"), OutfitStudioFrame::OnNifBlockInspector)
 
 	EVT_MENU(XRCID("editUndo"), OutfitStudioFrame::OnUndo)
 	EVT_MENU(XRCID("editRedo"), OutfitStudioFrame::OnRedo)
@@ -12813,6 +12814,20 @@ void OutfitStudioFrame::OnShapeProperties(wxCommandEvent& WXUNUSED(event)) {
 		ShapeProperties prop(this, project->GetWorkNif(), selectedShapes);
 		prop.ShowModal();
 	}
+}
+
+void OutfitStudioFrame::OnNifBlockInspector(wxCommandEvent& WXUNUSED(event)) {
+	if (!blockInspector)
+		blockInspector = new NifBlockInspector(this);
+
+	// OutfitProject holds a single workNif that contains both outfit shapes
+	// and the reference shape (marked via IsBaseShape).  Pass it as the work NIF;
+	// the second argument (reference NIF) is only needed when projects load a
+	// separate reference file — not currently supported, so nullptr is fine.
+	NifFile* workNif = project ? project->GetWorkNif() : nullptr;
+	blockInspector->RefreshNIF(workNif, nullptr);
+	blockInspector->Show();
+	blockInspector->Raise();
 }
 
 void OutfitStudioFrame::OnMaskLess(wxCommandEvent& WXUNUSED(event)) {

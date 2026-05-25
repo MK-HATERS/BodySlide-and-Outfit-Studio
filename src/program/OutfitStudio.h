@@ -19,6 +19,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #include "../components/Automorph.h"
 #include "../components/PoseData.h"
+#include "NifBlockInspector.h"
 #include "../components/RefTemplates.h"
 #include "../components/TweakBrush.h"
 #include "../components/UndoHistory.h"
@@ -960,6 +961,7 @@ public:
 
 	wxGLPanel* glView = nullptr;
 	EditUV* editUV = nullptr;
+	NifBlockInspector* blockInspector = nullptr;
 	OutfitProject* project = nullptr;
 	ShapeItemData* activeItem = nullptr;
 	std::string activeSlider;
@@ -1518,6 +1520,7 @@ private:
 	void OnDeleteUnreferencedNodes(wxCommandEvent& event);
 	void OnRemoveSkinning(wxCommandEvent& event);
 	void OnShapeProperties(wxCommandEvent& event);
+	void OnNifBlockInspector(wxCommandEvent& event);
 
 	void OnMaskLess(wxCommandEvent& event);
 	void OnMaskMore(wxCommandEvent& event);
