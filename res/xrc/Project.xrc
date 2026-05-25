@@ -612,6 +612,89 @@
 							<checked>0</checked>
 						</object>
 					</object>
+					<!-- ── Reference template registration ──────────────────────── -->
+					<object class="sizeritem">
+						<option>0</option>
+						<flag>wxEXPAND</flag>
+						<border>5</border>
+						<object class="wxBoxSizer">
+							<orient>wxHORIZONTAL</orient>
+							<object class="sizeritem">
+								<option>0</option>
+								<flag>wxALIGN_CENTER_VERTICAL|wxALL</flag>
+								<border>5</border>
+								<object class="wxCheckBox" name="sssRegisterRefTemplate">
+									<tooltip>Adds an entry for this slider set to a RefTemplates XML file so it appears in the 'Load Reference' template picker. Only available when a reference shape is loaded.</tooltip>
+									<label>Register as reference template</label>
+									<checked>0</checked>
+								</object>
+							</object>
+							<object class="sizeritem">
+								<option>1</option>
+								<flag>wxALIGN_CENTER_VERTICAL|wxALL</flag>
+								<border>5</border>
+								<object class="wxStaticText" name="m_sssRefTemplateFileLabel">
+									<label>in file:</label>
+									<wrap>-1</wrap>
+								</object>
+							</object>
+							<object class="sizeritem">
+								<option>3</option>
+								<flag>wxALL</flag>
+								<border>5</border>
+								<object class="wxTextCtrl" name="sssRefTemplateFile">
+									<tooltip>Name of the XML file inside the project root to write the template entry into. Defaults to RefTemplates.xml.</tooltip>
+									<value>RefTemplates.xml</value>
+								</object>
+							</object>
+						</object>
+					</object>
+					<!-- ── BodySlide group membership ────────────────────────────── -->
+					<object class="sizeritem">
+						<option>0</option>
+						<flag>wxEXPAND</flag>
+						<border>5</border>
+						<object class="wxBoxSizer">
+							<orient>wxHORIZONTAL</orient>
+							<object class="sizeritem">
+								<option>1</option>
+								<flag>wxALIGN_CENTER_VERTICAL|wxALL</flag>
+								<border>5</border>
+								<object class="wxStaticText" name="m_sssAddToGroup">
+									<label>Add to group</label>
+									<wrap>-1</wrap>
+								</object>
+							</object>
+							<object class="sizeritem">
+								<option>2</option>
+								<flag>wxALL</flag>
+								<border>5</border>
+								<object class="wxComboBox" name="sssAddToGroup">
+									<tooltip>Add this outfit to a BodySlide slider group so it appears in batch builds. Type a new name to create a group, or select an existing one. Leave as '(None)' to skip.</tooltip>
+									<value>(None)</value>
+									<style>wxCB_DROPDOWN</style>
+								</object>
+							</object>
+							<object class="sizeritem">
+								<option>1</option>
+								<flag>wxALIGN_CENTER_VERTICAL|wxALL</flag>
+								<border>5</border>
+								<object class="wxStaticText" name="m_sssGroupFileLabel">
+									<label>in file:</label>
+									<wrap>-1</wrap>
+								</object>
+							</object>
+							<object class="sizeritem">
+								<option>2</option>
+								<flag>wxALL</flag>
+								<border>5</border>
+								<object class="wxTextCtrl" name="sssGroupFile">
+									<tooltip>Name of the XML file inside SliderGroups/ to write this group into. Defaults to &lt;GroupName&gt;.xml. Leave empty to auto-derive from the group name.</tooltip>
+									<value></value>
+								</object>
+							</object>
+						</object>
+					</object>
 				</object>
 			</object>
 			<object class="spacer">

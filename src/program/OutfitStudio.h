@@ -1049,6 +1049,16 @@ public:
 	void CreateSetSliders();
 
 	void UpdateReferenceTemplates();
+
+	// Called after a successful SaveProjectAs to optionally write a RefTemplates.xml entry
+	// and/or add the outfit to a SliderGroups XML file.
+	// xmlFileName: just the filename (e.g. "RefTemplates.xml") written under the project root.
+	// groupXmlFile: just the filename (e.g. "All.xml") written under SliderGroups/; empty = derive from groupName.
+	void AutoWriteRefTemplate(const std::string& ospFullPath, const std::string& setName,
+							  const std::string& baseShapeName, const std::string& xmlFileName = "RefTemplates.xml");
+	void AutoAddToSliderGroup(const std::string& outfitName, const std::string& groupName,
+							  const std::string& groupXmlFile = "");
+
 	void ResetProject();
 
 	std::string NewSlider(const std::string& suggestedName = "", bool skipPrompt = false);

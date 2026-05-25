@@ -2653,6 +2653,79 @@ bool OutfitStudioFrame::SaveProjectAs() {
 		else
 			XRCCTRL(dlg, "sssAutoCopyRef", wxCheckBox)->SetValue(project->mCopyRef);
 
+		// ── Reference template + group registration ──────────────────────────────
+		// "Register as reference template" is only meaningful when a reference/base
+		// shape is loaded (body mods).  Pre-tick and enable only in that case.
+		{
+			bool hasBase = (project->GetBaseShape() != nullptr);
+			auto* refTmplChk = XRCCTRL(dlg, "sssRegisterRefTemplate", wxCheckBox);
+			refTmplChk->SetValue(hasBase);
+			refTmplChk->Enable(hasBase);
+		}
+
+		// Populate the "Add to group" combobox with every known group name.
+		// When the selection changes, auto-fill the "in file" field with the
+		// name of the XML that already holds that group (or <GroupName>.xml if new).
+		{
+			auto* grpCombo  = XRCCTRL(dlg, "sssAddToGroup",  wxComboBox);
+			auto* grpFileFld = XRCCTRL(dlg, "sssGroupFile",  wxTextCtrl);
+			grpCombo->Clear();
+			grpCombo->Append("(None)");
+
+			// Build a map group-name → source xml filename so we can fill the field.
+			std::map<std::string, std::string> groupFileMap;
+			{
+				wxArrayString gxmlFiles;
+				wxDir::GetAllFiles(wxString::FromUTF8(GetProjectPath()) + "/SliderGroups",
+								   &gxmlFiles, "*.xml");
+				for (auto& f : gxmlFiles) {
+					SliderSetGroupFile sgf(f.ToUTF8().data());
+					std::vector<std::string> names;
+					sgf.GetGroupNames(names);
+					wxFileName fn(f);
+					for (auto& n : names)
+						groupFileMap.emplace(n, fn.GetFullName().ToUTF8().data());
+				}
+			}
+
+			SliderSetGroupCollection grpCol;
+			grpCol.LoadGroups(GetProjectPath() + "/SliderGroups");
+			std::set<std::string> groupNames;
+			grpCol.GetAllGroups(groupNames);
+			for (auto& g : groupNames)
+				grpCombo->Append(wxString::FromUTF8(g));
+			grpCombo->SetSelection(0);
+
+			// When the user picks a group, update the filename field.
+			grpCombo->Bind(wxEVT_COMBOBOX, [grpCombo, grpFileFld, groupFileMap](wxCommandEvent&) {
+				std::string sel = grpCombo->GetValue().ToUTF8().data();
+				if (sel.empty() || sel == "(None)") {
+					grpFileFld->ChangeValue(wxEmptyString);
+					return;
+				}
+				auto it = groupFileMap.find(sel);
+				if (it != groupFileMap.end())
+					grpFileFld->ChangeValue(wxString::FromUTF8(it->second));
+				else
+					grpFileFld->ChangeValue(wxString::FromUTF8(sel + ".xml"));
+			});
+			// Also handle free-text entry.
+			grpCombo->Bind(wxEVT_TEXT, [grpCombo, grpFileFld, groupFileMap](wxCommandEvent&) {
+				std::string typed = grpCombo->GetValue().ToUTF8().data();
+				if (typed.empty() || typed == "(None)") {
+					grpFileFld->ChangeValue(wxEmptyString);
+					return;
+				}
+				// Only auto-fill if the field is still at a "derived" default,
+				// i.e. the user hasn't manually typed their own filename.
+				auto it = groupFileMap.find(typed);
+				if (it != groupFileMap.end())
+					grpFileFld->ChangeValue(wxString::FromUTF8(it->second));
+				else
+					grpFileFld->ChangeValue(wxString::FromUTF8(typed + ".xml"));
+			});
+		}
+
 		result = dlg.ShowModal();
 	}
 	if (result == wxID_CANCEL)
@@ -2727,6 +2800,19 @@ bool OutfitStudioFrame::SaveProjectAs() {
 	if (sel > 0) // 0 = "(None)"
 		strSFMorphTargetShape = morphShapeChoice->GetString(sel);
 
+	bool     doRegRefTemplate  = XRCCTRL(dlg, "sssRegisterRefTemplate", wxCheckBox)->GetValue();
+	wxString refTemplateFile   = XRCCTRL(dlg, "sssRefTemplateFile",    wxTextCtrl)->GetValue();
+	wxString addToGroupVal     = XRCCTRL(dlg, "sssAddToGroup",         wxComboBox)->GetValue();
+	wxString groupFile         = XRCCTRL(dlg, "sssGroupFile",          wxTextCtrl)->GetValue();
+
+	// Normalize: empty refTemplateFile defaults to RefTemplates.xml
+	if (refTemplateFile.IsEmpty())
+		refTemplateFile = "RefTemplates.xml";
+	// Ensure .xml extension
+	if (!refTemplateFile.EndsWith(".xml"))
+		refTemplateFile += ".xml";
+	// groupFile default derived from group name at call time (handled in helper)
+
 	wxLogMessage("Saving project '%s'...", strOutfitName);
 	StartProgress(wxString::Format(_("Saving project '%s'..."), strOutfitName));
 
@@ -2751,6 +2837,22 @@ bool OutfitStudioFrame::SaveProjectAs() {
 		menuBar->Enable(XRCID("fileSave"), true);
 
 		RenameProject(strOutfitName.ToUTF8().data());
+
+		// ── Optional post-save automation ────────────────────────────────────────
+		if (doRegRefTemplate) {
+			std::string baseShapeName;
+			if (auto* bs = project->GetBaseShape())
+				baseShapeName = bs->name.get();
+			AutoWriteRefTemplate(sliderSetFile.GetFullPath().ToUTF8().data(),
+								 strOutfitName.ToUTF8().data(),
+								 baseShapeName,
+								 refTemplateFile.ToUTF8().data());
+		}
+		if (!addToGroupVal.IsEmpty() && addToGroupVal != "(None)")
+			AutoAddToSliderGroup(strOutfitName.ToUTF8().data(),
+								 addToGroupVal.ToUTF8().data(),
+								 groupFile.ToUTF8().data());
+
 		EndProgress(_("Saved."));
 	}
 	else {
@@ -4559,6 +4661,153 @@ void OutfitStudioFrame::UpdateReferenceTemplates() {
 	RefTemplateCollection refTemplateCol;
 	refTemplateCol.Load(GetProjectPath() + "/RefTemplates");
 	refTemplateCol.GetAll(refTemplates);
+}
+
+// ── Auto-save helpers ─────────────────────────────────────────────────────────
+
+void OutfitStudioFrame::AutoWriteRefTemplate(const std::string& ospFullPath,
+											  const std::string& setName,
+											  const std::string& baseShapeName,
+											  const std::string& xmlFileName) {
+	if (setName.empty() || baseShapeName.empty())
+		return;
+
+	std::string projectPath = GetProjectPath();
+	// xmlFileName is just a filename (possibly with subdirs); resolve relative to project root.
+	std::string resolvedXml = xmlFileName.empty() ? "RefTemplates.xml" : xmlFileName;
+	std::string refTemplateFilePath = projectPath + "/" + resolvedXml;
+
+	// Make the .osp path relative to the project root so RefTemplates.xml stays portable.
+	wxFileName ospFn(wxString::FromUTF8(ospFullPath));
+	ospFn.MakeRelativeTo(wxString::FromUTF8(projectPath));
+	std::string relOspPath = ospFn.GetFullPath().ToUTF8().data();
+	// Use forward slashes for XML portability across platforms.
+	std::replace(relOspPath.begin(), relOspPath.end(), '\\', '/');
+
+	XMLDocument doc;
+	XMLElement* root = nullptr;
+
+	// Load existing file or build a fresh document.
+	if (wxFileName::IsFileReadable(wxString::FromUTF8(refTemplateFilePath))) {
+		if (doc.LoadFile(refTemplateFilePath.c_str()) == XML_SUCCESS)
+			root = doc.FirstChildElement("RefTemplates");
+	}
+	if (!root) {
+		doc.Clear();
+		XMLDeclaration* decl = doc.NewDeclaration();
+		doc.InsertEndChild(decl);
+		root = doc.NewElement("RefTemplates");
+		doc.InsertEndChild(root);
+	}
+
+	// Update existing entry if the set name already appears — avoid duplicates.
+	XMLElement* el = root->FirstChildElement("Template");
+	while (el) {
+		if (el->Attribute("set") && std::string(el->Attribute("set")) == setName) {
+			el->SetAttribute("sourcefile", relOspPath.c_str());
+			el->SetAttribute("shape", baseShapeName.c_str());
+			el->SetText(setName.c_str());
+			if (doc.SaveFile(refTemplateFilePath.c_str()) == XML_SUCCESS) {
+				wxLogMessage("Updated reference template '%s' in RefTemplates.xml.", setName);
+				UpdateReferenceTemplates();
+			}
+			else
+				wxLogError("Failed to write RefTemplates.xml.");
+			return;
+		}
+		el = el->NextSiblingElement("Template");
+	}
+
+	// New entry.
+	XMLElement* tmpl = doc.NewElement("Template");
+	tmpl->SetAttribute("sourcefile", relOspPath.c_str());
+	tmpl->SetAttribute("set", setName.c_str());
+	tmpl->SetAttribute("shape", baseShapeName.c_str());
+	tmpl->SetText(setName.c_str());
+	root->InsertEndChild(tmpl);
+
+	if (doc.SaveFile(refTemplateFilePath.c_str()) == XML_SUCCESS) {
+		wxLogMessage("Registered reference template '%s' in RefTemplates.xml.", setName);
+		UpdateReferenceTemplates();
+	}
+	else
+		wxLogError("Failed to write RefTemplates.xml.");
+}
+
+void OutfitStudioFrame::AutoAddToSliderGroup(const std::string& outfitName,
+											  const std::string& groupName,
+											  const std::string& groupXmlFile) {
+	if (outfitName.empty() || groupName.empty())
+		return;
+
+	std::string projectPath = GetProjectPath();
+	std::string groupsDir = projectPath + "/SliderGroups";
+	wxFileName::Mkdir(wxString::FromUTF8(groupsDir), wxS_DIR_DEFAULT, wxPATH_MKDIR_FULL);
+
+	// If the user specified an explicit XML filename, use it directly.
+	// Otherwise scan existing files for one that already contains this group.
+	std::string targetFile;
+	if (!groupXmlFile.empty()) {
+		// Strip any directory component — always write under SliderGroups/.
+		wxFileName fn(wxString::FromUTF8(groupXmlFile));
+		targetFile = groupsDir + "/" + fn.GetFullName().ToUTF8().data();
+	}
+	else {
+		wxArrayString groupFiles;
+		wxDir::GetAllFiles(wxString::FromUTF8(groupsDir), &groupFiles, "*.xml");
+
+		for (auto& f : groupFiles) {
+			SliderSetGroupFile sgf(f.ToUTF8().data());
+			if (!sgf.fail() && sgf.HasGroup(groupName)) {
+				targetFile = f.ToUTF8().data();
+				break;
+			}
+		}
+
+		if (targetFile.empty()) {
+			// No existing file has this group — derive filename from group name.
+			std::string safeName = groupName;
+			for (char& c : safeName)
+				if (c == '\\' || c == '/' || c == ':' || c == '*' || c == '?' ||
+					c == '"'  || c == '<' || c == '>' || c == '|')
+					c = '_';
+			targetFile = groupsDir + "/" + safeName + ".xml";
+		}
+	}
+
+	// Before writing, check for duplicate membership.
+	if (wxFileName::IsFileReadable(wxString::FromUTF8(targetFile))) {
+		SliderSetGroupFile chk(targetFile);
+		if (!chk.fail() && chk.HasGroup(groupName)) {
+			SliderSetGroup existing;
+			chk.GetGroup(groupName, existing);
+			std::vector<std::string> members;
+			existing.GetMembers(members);
+			if (std::find(members.begin(), members.end(), outfitName) != members.end()) {
+				wxLogMessage("'%s' is already a member of group '%s'.", outfitName, groupName);
+				return;
+			}
+		}
+	}
+
+	// Load (or create) the file, add the member to the group, and save.
+	SliderSetGroupFile groupFile;
+	if (wxFileName::IsFileReadable(wxString::FromUTF8(targetFile)))
+		groupFile.Open(targetFile);
+	if (groupFile.fail())
+		groupFile.New(targetFile);
+
+	SliderSetGroup group;
+	if (groupFile.HasGroup(groupName))
+		groupFile.GetGroup(groupName, group);
+	group.SetName(groupName);
+	group.AddMembers({outfitName});
+	groupFile.UpdateGroup(group);
+
+	if (groupFile.Save())
+		wxLogMessage("Added '%s' to group '%s' ('%s').", outfitName, groupName, targetFile);
+	else
+		wxLogError("Failed to save slider group file '%s'.", targetFile);
 }
 
 void OutfitStudioFrame::ClearProject() {
