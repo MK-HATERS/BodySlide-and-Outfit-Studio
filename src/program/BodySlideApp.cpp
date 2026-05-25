@@ -19,7 +19,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "../components/ClippingFixer.h"
 #include "../components/Mesh.h"
 #include "../files/SFMorphFile.h"
-#include "../../lib/nifly/include/KDMatcher.hpp"
 #include "../files/wxDDSImage.h"
 #include "../utils/PlatformUtil.h"
 #include "../utils/ParallelFor.h"
@@ -1456,7 +1455,7 @@ bool BodySlideApp::WriteMorphTRI(const std::string& triPath, SliderSet& sliderSe
 	return true;
 }
 
-bool BodySlideApp::WriteSFMorphFile(const std::string& morphFolder, const std::string& outputDataPath, SliderSet& sliderSet, NifFile& nif, std::unordered_map<std::string, std::vector<uint16_t>>& zapIndices) {
+bool BodySlideApp::WriteSFMorphFile(const std::string& morphFolder, SliderSet& sliderSet, NifFile& nif, std::unordered_map<std::string, std::vector<uint16_t>>& zapIndices) {
 	std::string targetShapeName = sliderSet.GetSFMorphTargetShape();
 	if (targetShapeName.empty()) {
 		wxLogMessage("No morph target shape designated, skipping morph.dat.");
@@ -1651,142 +1650,6 @@ bool BodySlideApp::WriteSFMorphFile(const std::string& morphFolder, const std::s
 	}
 
 	wxLogMessage("Successfully wrote morph.dat to '%s'.", shapeFilePath);
-
-	// ── LOD morph.dat generation ────────────────────────────────────────────────
-	// For Starfield BSGeometry shapes that carry multiple LOD meshes (meshes[1..N]),
-	// write a separate morph.dat for each LOD level.  The LOD vertex set is a
-	// decimated subset of the LOD0 surface; we map each LOD vertex to its nearest
-	// LOD0 vertex (kd-tree) and propagate the same morph offsets/colors/normals.
-	// The morph.dat path is derived from the LOD mesh name in the NIF:
-	//   outputDataPath + "morphs/" + cleaned_lod_mesh_path
-	auto* bsgeo = dynamic_cast<BSGeometry*>(shape);
-	if (bsgeo && bsgeo->MeshCount() > 1 && !outputDataPath.empty()) {
-		// Build a kd-tree over LOD0 vertices (NIF space) for fast nearest-lookup.
-		const uint16_t lod0Count = static_cast<uint16_t>(
-			std::min(baseVerts.size(), static_cast<size_t>(std::numeric_limits<uint16_t>::max())));
-		kd_tree<uint16_t> lod0Tree(baseVerts.data(), lod0Count);
-
-		for (uint8_t lodIdx = 1; lodIdx < bsgeo->MeshCount(); lodIdx++) {
-			// Peek at the mesh path while selected, then release immediately.
-			BSGeometryMesh* lodMeshPtr = bsgeo->SelectMesh(lodIdx);
-			std::string lodMeshName = lodMeshPtr ? lodMeshPtr->meshName.get() : std::string{};
-			bsgeo->ReleaseMesh();
-
-			if (lodMeshName.empty())
-				continue;
-
-			// Derive the morph folder:
-			//   strip any "geometries/" prefix and ".mesh" suffix, normalise slashes,
-			//   then place under outputDataPath/morphs/
-			std::string cleanPath = lodMeshName;
-			std::replace(cleanPath.begin(), cleanPath.end(), '\\', '/');
-			{
-				std::string lower = cleanPath.substr(0, std::min<size_t>(cleanPath.size(), 11));
-				std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
-				if (lower == "geometries/")
-					cleanPath = cleanPath.substr(11);
-			}
-			if (cleanPath.size() >= 5) {
-				std::string ext = cleanPath.substr(cleanPath.size() - 5);
-				std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-				if (ext == ".mesh")
-					cleanPath.erase(cleanPath.size() - 5);
-			}
-			// Normalize to platform path separator.
-			std::replace(cleanPath.begin(), cleanPath.end(), '/',
-						 static_cast<char>(wxFileName::GetPathSeparator()));
-
-			std::string lodMorphFolder = outputDataPath + "morphs" + PathSepStr + cleanPath;
-
-			// Read LOD vertices and colors using SelectMesh.
-			bsgeo->SelectMesh(lodIdx);
-			std::vector<Vector3> lodVerts;
-			std::vector<Color4>  lodColors;
-			nif.GetVertsForShape(shape, lodVerts);
-			nif.GetColorsForShape(shape, lodColors);
-			bsgeo->ReleaseMesh();
-
-			if (lodVerts.empty()) {
-				wxLogMessage("LOD%u mesh for shape '%s' has no vertices, skipping LOD morph.",
-							 (unsigned)lodIdx, targetShapeName);
-				continue;
-			}
-
-			const uint16_t lodCount = static_cast<uint16_t>(
-				std::min(lodVerts.size(), static_cast<size_t>(std::numeric_limits<uint16_t>::max())));
-
-			// Map each LOD vertex → nearest LOD0 vertex index.
-			std::vector<uint16_t> lodToLod0(lodCount);
-			for (uint16_t v = 0; v < lodCount; v++) {
-				lod0Tree.kd_nn(&lodVerts[v], 0.0f);
-				lodToLod0[v] = lod0Tree.queryResult.empty()
-					? 0 : lod0Tree.queryResult[0].vertex_index;
-			}
-
-			// Build the LOD SFMorphFile by propagating LOD0 morph data through the map.
-			SFMorphFile lodMorphFile;
-			lodMorphFile.SetVertexCount(lodCount);
-
-			for (const auto& morphName : morphFile.GetMorphNames()) {
-				auto cacheIt = morphFile.morphNamesCacheMap.find(morphName);
-				if (cacheIt == morphFile.morphNamesCacheMap.end())
-					continue;
-				const uint32_t ci = cacheIt->second;
-
-				std::unordered_map<uint16_t, Vector3> lodOffsets;
-				std::unordered_map<uint16_t, Color3>  lodColors2;
-				std::unordered_map<uint16_t, Vector3> lodNormals;
-				std::unordered_map<uint16_t, Vector3> lodTangents;
-
-				for (uint16_t v = 0; v < lodCount; v++) {
-					const uint16_t lod0V = lodToLod0[v];
-
-					auto oIt = morphFile.morphOffsetsCache[ci].find(lod0V);
-					if (oIt == morphFile.morphOffsetsCache[ci].end())
-						continue; // this LOD0 vert has no morph for this shape key
-
-					lodOffsets[v] = oIt->second;
-
-					auto cIt = morphFile.morphColorsCache[ci].find(lod0V);
-					if (cIt != morphFile.morphColorsCache[ci].end())
-						lodColors2[v] = cIt->second;
-					else if (v < static_cast<uint16_t>(lodColors.size()))
-						lodColors2[v] = Color3(lodColors[v].r, lodColors[v].g, lodColors[v].b);
-
-					auto nIt = morphFile.morphNormalsCache[ci].find(lod0V);
-					if (nIt != morphFile.morphNormalsCache[ci].end())
-						lodNormals[v] = nIt->second;
-
-					auto tIt = morphFile.morphTangentsCache[ci].find(lod0V);
-					if (tIt != morphFile.morphTangentsCache[ci].end())
-						lodTangents[v] = tIt->second;
-				}
-
-				if (!lodOffsets.empty())
-					lodMorphFile.AddMorph(morphName, lodOffsets, lodColors2, lodNormals, lodTangents);
-			}
-
-			if (lodMorphFile.morphOffsetsCache.empty()) {
-				wxLogMessage("No morphs propagated to LOD%u for shape '%s', skipping.",
-							 (unsigned)lodIdx, targetShapeName);
-				continue;
-			}
-
-			wxLogMessage("Writing LOD%u morph.dat (%zu morphs) for '%s' to '%s'...",
-						 (unsigned)lodIdx,
-						 lodMorphFile.morphOffsetsCache.size(),
-						 targetShapeName, lodMorphFolder.c_str());
-
-			wxFileName::Mkdir(wxString::FromUTF8(lodMorphFolder), wxS_DIR_DEFAULT, wxPATH_MKDIR_FULL);
-			std::string lodMorphPath = lodMorphFolder + PathSepStr + "morph.dat";
-
-			lodMorphFile.CacheToFileData();
-			if (!lodMorphFile.Write(lodMorphPath))
-				wxLogError("Failed to write LOD%u morph.dat to '%s'.", (unsigned)lodIdx, lodMorphPath.c_str());
-			else
-				wxLogMessage("Successfully wrote LOD%u morph.dat to '%s'.", (unsigned)lodIdx, lodMorphPath.c_str());
-		}
-	}
 
 	return true;
 }
@@ -3779,7 +3642,7 @@ int BodySlideApp::BuildBodies(bool localPath, bool clean, bool tri, bool forceNo
 		if (tri && !triKeep && !sfMorphPath.empty() && !sfMorphTargetShape.empty()) {
 			std::string outDataPath = GetOutputDataPath();
 			std::string morphFolder = outDataPath + sfMorphPath;
-			WriteSFMorphFile(morphFolder, outDataPath, activeSet, nifBig, zapIdxAll);
+			WriteSFMorphFile(morphFolder, activeSet, nifBig, zapIdxAll);
 		}
 	}
 	else {
@@ -4677,7 +4540,7 @@ int BodySlideApp::BuildListBodies(
 			std::string sfMorphTargetShape = currentSet.GetSFMorphTargetShape();
 			if (tri && !triKeep && !sfMorphPath.empty() && !sfMorphTargetShape.empty()) {
 				std::string morphFolder = datapath + sfMorphPath;
-				WriteSFMorphFile(morphFolder, datapath, currentSet, nifBig, zapIdxAll);
+				WriteSFMorphFile(morphFolder, currentSet, nifBig, zapIdxAll);
 			}
 		}
 		else {
