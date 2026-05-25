@@ -531,8 +531,14 @@ void BSA::addFilesOfFolders(const std::string &folderName, std::vector<std::stri
 
 void BSA::fileTree(std::vector<std::string> &tree) const {
 	tree.push_back(name());
+	// BSA / OB archives: files live in folder sub-trees under root.children
 	for (auto &folder : root.children)
 		addFilesOfFolders(folder.first, tree);
+	// BA2 archives (F4/SF GNRL and DX10): insertFile(char*,...) puts the full
+	// path directly into root.files (e.g. "meshes/actors/foo.nif").
+	// They are not reachable via root.children, so emit them separately.
+	for (auto &f : root.files)
+		tree.push_back(f.first);
 }
 
 bool BSA::fileContents(const std::string &fn, wxMemoryBuffer &content) {
