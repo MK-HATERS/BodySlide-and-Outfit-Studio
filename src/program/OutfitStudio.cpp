@@ -2253,10 +2253,14 @@ void OutfitStudioFrame::OnSettings(wxCommandEvent& WXUNUSED(event)) {
 		wxDirPickerCtrl* dpOutputPath = XRCCTRL(*settings, "dpOutputPath", wxDirPickerCtrl);
 		wxString outputPath = wxString::FromUTF8(Config["OutputDataPath"]);
 		dpOutputPath->SetPath(outputPath);
+		if (wxTextCtrl* outputPathText = dpOutputPath->GetTextCtrl())
+			outputPathText->SetHint(_("Optional (uses Game Data Path if empty)"));
 
 		wxDirPickerCtrl* dpProjectPath = XRCCTRL(*settings, "dpProjectPath", wxDirPickerCtrl);
 		wxString projectPath = wxString::FromUTF8(Config["ProjectPath"]);
 		dpProjectPath->SetPath(projectPath);
+		if (wxTextCtrl* projectPathText = dpProjectPath->GetTextCtrl())
+			projectPathText->SetHint(_("Optional (uses executable directory if empty)"));
 
 		wxCheckBox* cbShowForceBodyNormals = XRCCTRL(*settings, "cbShowForceBodyNormals", wxCheckBox);
 		cbShowForceBodyNormals->SetValue(Config.GetBoolValue("ShowForceBodyNormals"));
@@ -12132,6 +12136,9 @@ void OutfitStudioFrame::OnCopyBoneWeight(wxCommandEvent& WXUNUSED(event)) {
 }
 
 int OutfitStudioFrame::CopyBoneWeightForShapes(std::vector<NiShape*> shapes, bool silent) {
+	if (shapes.empty())
+		return 0;
+
 	CloseBrushSettings();
 
 	if (shapes.empty())
@@ -12414,6 +12421,9 @@ void OutfitStudioFrame::OnCopySegPart(wxCommandEvent& WXUNUSED(event)) {
 }
 
 int OutfitStudioFrame::CopySegPartForShapes(std::vector<NiShape*> shapes, bool silent) {
+	if (shapes.empty())
+		return 0;
+
 	int failshapes = 0;
 
 	StartProgress(_("Copying segments/partitions..."));
