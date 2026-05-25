@@ -4687,6 +4687,12 @@ void OutfitStudioFrame::AutoWriteRefTemplate(const std::string& ospFullPath,
 	XMLDocument doc;
 	XMLElement* root = nullptr;
 
+	// Ensure the parent directory exists (user may have typed a subdir path).
+	{
+		wxFileName rfn(wxString::FromUTF8(refTemplateFilePath));
+		wxFileName::Mkdir(rfn.GetPath(), wxS_DIR_DEFAULT, wxPATH_MKDIR_FULL);
+	}
+
 	// Load existing file or build a fresh document.
 	if (wxFileName::IsFileReadable(wxString::FromUTF8(refTemplateFilePath))) {
 		if (doc.LoadFile(refTemplateFilePath.c_str()) == XML_SUCCESS)
@@ -4708,11 +4714,11 @@ void OutfitStudioFrame::AutoWriteRefTemplate(const std::string& ospFullPath,
 			el->SetAttribute("shape", baseShapeName.c_str());
 			el->SetText(setName.c_str());
 			if (doc.SaveFile(refTemplateFilePath.c_str()) == XML_SUCCESS) {
-				wxLogMessage("Updated reference template '%s' in RefTemplates.xml.", setName);
+				wxLogMessage("Updated reference template '%s' in '%s'.", setName, resolvedXml);
 				UpdateReferenceTemplates();
 			}
 			else
-				wxLogError("Failed to write RefTemplates.xml.");
+				wxLogError("Failed to write '%s'.", resolvedXml);
 			return;
 		}
 		el = el->NextSiblingElement("Template");
@@ -4727,11 +4733,11 @@ void OutfitStudioFrame::AutoWriteRefTemplate(const std::string& ospFullPath,
 	root->InsertEndChild(tmpl);
 
 	if (doc.SaveFile(refTemplateFilePath.c_str()) == XML_SUCCESS) {
-		wxLogMessage("Registered reference template '%s' in RefTemplates.xml.", setName);
+		wxLogMessage("Registered reference template '%s' in '%s'.", setName, resolvedXml);
 		UpdateReferenceTemplates();
 	}
 	else
-		wxLogError("Failed to write RefTemplates.xml.");
+		wxLogError("Failed to write '%s'.", resolvedXml);
 }
 
 void OutfitStudioFrame::AutoAddToSliderGroup(const std::string& outfitName,
@@ -4811,6 +4817,12 @@ void OutfitStudioFrame::AutoAddToSliderGroup(const std::string& outfitName,
 }
 
 void OutfitStudioFrame::ClearProject() {
+	// Null out the NIF Block Inspector's stored pointers before any NIF data
+	// is freed.  BuildTree() guards against null, so this is safe and prevents
+	// use-after-free if the inspector is open during a project change.
+	if (blockInspector)
+		blockInspector->RefreshNIF(nullptr, nullptr);
+
 	if (editUV)
 		editUV->Close();
 
