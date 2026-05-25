@@ -287,10 +287,16 @@ void SFMorphFile::CacheToFileData() {
 						morphDataRaw.push_back(morphData);
 
 						morphKeyIndices.push_back(morphKey);
-						morphKey++;
 					}
 				}
 			}
+
+			// Always increment after each morph so morphKey reflects the actual index
+			// within morphNames — not just how many morphs had entries for this vertex.
+			// The previous placement inside the "non-zero offset" block made the stored
+			// bit positions sequential per-vertex counters, causing FileToCacheData() to
+			// map data back to the wrong morph names.
+			morphKey++;
 		}
 
 		vertexMorphKeyIndices.push_back(morphKeyIndices);

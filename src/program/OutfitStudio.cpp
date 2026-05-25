@@ -153,6 +153,7 @@ wxBEGIN_EVENT_TABLE(OutfitStudioFrame, wxFrame)
 	EVT_MENU(XRCID("fitSlidersToShape"), OutfitStudioFrame::OnFitSlidersToShape)
 
 	EVT_MENU(XRCID("importNIF"), OutfitStudioFrame::OnImportNIF)
+	EVT_MENU(XRCID("importNIFFromArchive"), OutfitStudioFrame::OnImportNIFFromArchive)
 	EVT_MENU(XRCID("exportNIF"), OutfitStudioFrame::OnExportNIF)
 	EVT_MENU(XRCID("exportNIFWithRef"), OutfitStudioFrame::OnExportNIFWithRef)
 	EVT_MENU(XRCID("exportShapeNIF"), OutfitStudioFrame::OnExportShapeNIF)
@@ -5342,6 +5343,145 @@ void OutfitStudioFrame::OnImportNIF(wxCommandEvent& WXUNUSED(event)) {
 
 	for (auto& fileName : fileNames)
 		project->ImportNIF(fileName.ToUTF8().data(), false);
+
+	UpdateProgress(60, _("Refreshing GUI..."));
+	project->SetTextures();
+
+	SetPendingChanges();
+	RefreshGUIFromProj();
+
+	UpdateTitle();
+	EndProgress();
+}
+
+void OutfitStudioFrame::OnImportNIFFromArchive(wxCommandEvent& WXUNUSED(event)) {
+	// ── 1. Collect every NIF entry from all open BA2/BSA archives ──────────────
+	struct ArchiveNif {
+		std::string path;    // archive-relative path, e.g. "meshes/actors/..."
+		FSArchiveFile* archive;
+	};
+	std::vector<ArchiveNif> allNifs;
+
+	for (FSArchiveFile* archive : FSManager::archiveList()) {
+		if (!archive) continue;
+		std::vector<std::string> tree;
+		archive->fileTree(tree);
+		for (auto& f : tree) {
+			if (f.size() >= 4 && ToLower(f.substr(f.size() - 4)) == ".nif")
+				allNifs.push_back({f, archive});
+		}
+	}
+
+	if (allNifs.empty()) {
+		wxMessageBox(
+			_("No NIF files found in open archives.\n\n"
+			  "Make sure the game data path is configured and game archives are listed in Settings."),
+			_("Import from Archive"),
+			wxOK | wxICON_INFORMATION, this);
+		return;
+	}
+
+	// ── 2. Filterable pick dialog ───────────────────────────────────────────────
+	wxDialog dlg(this, wxID_ANY, _("Import NIF from Archive"),
+				  wxDefaultPosition, wxSize(600, 520),
+				  wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER);
+
+	auto* search  = new wxSearchCtrl(&dlg, wxID_ANY, wxEmptyString,
+									  wxDefaultPosition, wxDefaultSize, wxTE_PROCESS_ENTER);
+	search->SetDescriptiveText(_("Filter NIFs…"));
+	search->ShowCancelButton(true);
+
+	auto* listBox = new wxListBox(&dlg, wxID_ANY, wxDefaultPosition, wxDefaultSize,
+								  0, nullptr,
+								  wxLB_SINGLE | wxLB_HSCROLL | wxBORDER_SUNKEN);
+
+	auto* countLbl = new wxStaticText(&dlg, wxID_ANY, wxEmptyString);
+
+	// Build initial list
+	auto populate = [&](const wxString& filter) {
+		listBox->Clear();
+		for (const auto& n : allNifs) {
+			wxString p = wxString::FromUTF8(n.path);
+			if (filter.empty() || p.Lower().Contains(filter.Lower()))
+				listBox->Append(p);
+		}
+		countLbl->SetLabel(wxString::Format(_("%zu files shown"), (size_t)listBox->GetCount()));
+	};
+	populate(wxEmptyString);
+
+	// Hook search control
+	search->Bind(wxEVT_SEARCH,        [&](wxCommandEvent&) { populate(search->GetValue()); });
+	search->Bind(wxEVT_SEARCH_CANCEL, [&](wxCommandEvent&) { search->SetValue(wxEmptyString); populate(wxEmptyString); });
+	search->Bind(wxEVT_TEXT,          [&](wxCommandEvent&) { populate(search->GetValue()); });
+	// Double-click accepts
+	listBox->Bind(wxEVT_LISTBOX_DCLICK, [&](wxCommandEvent&) { dlg.EndModal(wxID_OK); });
+
+	auto* mainSizer = new wxBoxSizer(wxVERTICAL);
+	mainSizer->Add(search,  0, wxEXPAND | wxALL, 4);
+	mainSizer->Add(listBox, 1, wxEXPAND | wxLEFT | wxRIGHT, 4);
+	mainSizer->Add(countLbl, 0, wxLEFT | wxBOTTOM, 6);
+	mainSizer->Add(dlg.CreateButtonSizer(wxOK | wxCANCEL), 0, wxEXPAND | wxALL, 4);
+	dlg.SetSizer(mainSizer);
+
+	if (dlg.ShowModal() != wxID_OK)
+		return;
+
+	int sel = listBox->GetSelection();
+	if (sel == wxNOT_FOUND)
+		return;
+
+	wxString selectedPath = listBox->GetString(sel);
+	std::string selPathStd = selectedPath.ToUTF8().data();
+
+	// Find archive that owns this path (match by path string)
+	FSArchiveFile* selectedArchive = nullptr;
+	for (const auto& n : allNifs) {
+		if (n.path == selPathStd) {
+			selectedArchive = n.archive;
+			break;
+		}
+	}
+	if (!selectedArchive) return;
+
+	// ── 3. Extract NIF bytes from archive → temp file → ImportNIF ──────────────
+	wxMemoryBuffer nifData;
+	if (!selectedArchive->fileContents(selPathStd, nifData) || nifData.IsEmpty()) {
+		wxLogError("Failed to read '%s' from archive '%s'.",
+				   selPathStd.c_str(), selectedArchive->name().c_str());
+		wxMessageBox(
+			wxString::Format(_("Failed to read '%s' from archive."), selectedPath),
+			_("Archive Read Error"), wxOK | wxICON_ERROR, this);
+		return;
+	}
+
+	wxString tmpPath = wxFileName::CreateTempFileName("bsos_nif");
+	if (tmpPath.empty()) {
+		wxMessageBox(_("Failed to create a temporary file."), _("Error"), wxOK | wxICON_ERROR, this);
+		return;
+	}
+
+	// Write archive bytes to temp file then immediately import
+	{
+		std::fstream tmpStream;
+		PlatformUtil::OpenFileStream(tmpStream, tmpPath.ToUTF8().data(),
+									  std::ios::out | std::ios::binary);
+		if (tmpStream.fail()) {
+			wxRemoveFile(tmpPath);
+			wxMessageBox(_("Failed to write temporary file."), _("Error"), wxOK | wxICON_ERROR, this);
+			return;
+		}
+		tmpStream.write(static_cast<const char*>(nifData.GetData()),
+						static_cast<std::streamsize>(nifData.GetDataLen()));
+	}
+
+	wxLogMessage("Importing NIF '%s' from archive '%s'...",
+				 selPathStd.c_str(), selectedArchive->name().c_str());
+
+	StartProgress(_("Importing NIF from archive..."));
+	UpdateProgress(1, _("Loading NIF..."));
+
+	project->ImportNIF(tmpPath.ToUTF8().data(), false);
+	wxRemoveFile(tmpPath);
 
 	UpdateProgress(60, _("Refreshing GUI..."));
 	project->SetTextures();

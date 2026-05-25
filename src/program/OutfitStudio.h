@@ -1324,6 +1324,7 @@ private:
 	void OnFitSlidersToShape(wxCommandEvent& event);
 
 	void OnImportNIF(wxCommandEvent& event);
+	void OnImportNIFFromArchive(wxCommandEvent& event);
 	void OnExportNIF(wxCommandEvent& event);
 	void OnExportNIFWithRef(wxCommandEvent& event);
 	void OnExportShapeNIF(wxCommandEvent& event);

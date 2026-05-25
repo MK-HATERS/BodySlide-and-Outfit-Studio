@@ -1721,6 +1721,10 @@
 					<label>From NIF...</label>
 					<help>Choose a NIF file to import into the project.</help>
 				</object>
+				<object class="wxMenuItem" name="importNIFFromArchive">
+					<label>From NIF (Archive)...</label>
+					<help>Browse open game archives and import a NIF from a BA2/BSA.</help>
+				</object>
 				<object class="wxMenuItem" name="importOBJ">
 					<label>From OBJ...</label>
 					<help>Import an OBJ file as a new shape in the outfit.</help>
