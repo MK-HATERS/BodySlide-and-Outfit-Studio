@@ -1784,7 +1784,7 @@ void BodySlideApp::PopOutPreview() {
 	int h = BodySlideConfig.GetIntValue("PreviewFrame.height");
 	std::string maximized = BodySlideConfig["PreviewFrame.maximized"];
 
-	// Unsplit: remove panel from splitter and shrink the main frame
+	// Hide AUI preview pane (panel stays alive, owned by standalone window next)
 	sliderView->UnsplitPreview();
 
 	// Reparent into standalone window
@@ -1807,11 +1807,13 @@ void BodySlideApp::DockPreview() {
 	if (!panel)
 		return;
 
-	// Reparent back into splitter
-	panel->Reparent(sliderView->splitter);
+	// Reparent back into the frame (AUI managed window)
+	panel->Reparent(sliderView);
 	sliderView->previewPanel = panel;
 	preview = panel;
 
+	// Update the AUI pane to point at the (same) panel and show it
+	sliderView->m_auiMgr.GetPane("Preview").window = panel;
 	sliderView->SplitPreview(panel);
 	sliderView->previewVisible = true;
 	sliderView->UpdatePreviewButtonLabel();
@@ -4836,6 +4838,10 @@ BodySlideFrame::BodySlideFrame(BodySlideApp* a, const wxSize& size)
 	: delayLoad(this, DELAYLOAD_TIMER) {
 	app = a;
 
+	// ── Dark theme + art provider ──────────────────────────────────────────────
+	BSTheme_InitDark();
+	wxArtProvider::Push(new BSArtProvider());
+
 	wxXmlResource* xrc = wxXmlResource::Get();
 	bool loaded = xrc->Load(wxString::FromUTF8(Config["AppDir"]) + "/res/xrc/BodySlide.xrc");
 	if (!loaded) {
@@ -4851,54 +4857,63 @@ BodySlideFrame::BodySlideFrame(BodySlideApp* a, const wxSize& size)
 		return;
 	}
 
-	// --- Embed splitter with preview panel ---
+	// --- Build AUI layout: left (sliders), center (preview), bottom (log) ---
 	// Capture the XRC-created sizer and all children, then reparent them
-	// into the left side of a splitter window.
+	// into the left panel managed by wxAuiManager.
 	wxSizer* originalSizer = GetSizer();
 
-	splitter = new wxSplitterWindow(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxSP_LIVE_UPDATE | wxSP_3DSASH);
-	splitter->SetMinimumPaneSize(200);
+	m_auiMgr.SetManagedWindow(this);
 
-	leftPanel = new wxPanel(splitter, wxID_ANY);
+	leftPanel = new wxPanel(this, wxID_ANY);
 
 	// Reparent all XRC children from frame to leftPanel
 	wxWindowList children = GetChildren();
 	for (auto* child : children) {
-		if (child != splitter)
+		if (child != leftPanel)
 			child->Reparent(leftPanel);
 	}
 
 	// Move the XRC sizer to leftPanel
 	SetSizer(nullptr, false);
 	leftPanel->SetSizer(originalSizer);
-	leftPanel->SetBackgroundColour(GetBackgroundColour());
+	leftPanel->SetBackgroundColour(gTheme.bgPanel);
+	leftPanel->SetForegroundColour(gTheme.fgText);
 	leftPanel->SetDoubleBuffered(true);
 
-	// Create embedded preview panel
-	previewPanel = new PreviewPanel(splitter, app);
+	// Create embedded preview panel and log panel
+	previewPanel = new PreviewPanel(this, app);
+	logPanel     = new BSLogPanel(this);
 
-	// Read sash position and visibility from config
+	// Read preview visibility from config
 	previewVisible = BodySlideConfig.GetBoolValue("BodySlideFrame.previewVisible", true);
-	savedSashPosition = BodySlideConfig.GetIntValue("BodySlideFrame.sashpos");
 
-	if (previewVisible) {
-		splitter->SplitVertically(leftPanel, previewPanel, savedSashPosition);
-	}
-	else {
-		splitter->Initialize(leftPanel);
-		previewPanel->Hide();
-	}
+	// Register AUI panes
+	m_auiMgr.AddPane(leftPanel,
+		wxAuiPaneInfo()
+		.Left().CaptionVisible(false).PaneBorder(false)
+		.BestSize(380, -1).MinSize(220, -1)
+		.Resizable(true).Name("Sliders").CloseButton(false));
 
-	// Set new top-level sizer for the frame
-	wxBoxSizer* frameSizer = new wxBoxSizer(wxVERTICAL);
-	frameSizer->Add(splitter, 1, wxEXPAND);
-	SetSizer(frameSizer);
+	m_auiMgr.AddPane(previewPanel,
+		wxAuiPaneInfo()
+		.CenterPane().Name("Preview")
+		.Show(previewVisible));
 
-	// Connect splitter events
-	splitter->Bind(wxEVT_SPLITTER_SASH_POS_CHANGED, &BodySlideFrame::OnSashPosChanged, this);
+	m_auiMgr.AddPane(logPanel,
+		wxAuiPaneInfo()
+		.Bottom().Caption("Build Log").CaptionVisible(true)
+		.BestSize(-1, 150).MinSize(-1, 80)
+		.CloseButton(true).Name("Log").Show(true));
+
+	// Restore saved perspective (layout), then commit
+	RestoreAUIPerspective();
+	m_auiMgr.Update();
 
 	// Listen for pop-out events from the preview panel
-	splitter->Bind(EVT_PREVIEW_POPOUT, &BodySlideFrame::OnPreviewPopout, this);
+	Bind(EVT_PREVIEW_POPOUT, &BodySlideFrame::OnPreviewPopout, this);
+
+	// Apply dark theme to the frame and all children
+	BSTheme_Apply(this);
 
 	outfitChoice = (wxChoice*)FindWindowByName("outfitChoice", this);
 	presetChoice = (wxChoice*)FindWindowByName("presetChoice", this);
@@ -5367,6 +5382,9 @@ void BodySlideFrame::OnExit(wxCommandEvent& WXUNUSED(event)) {
 }
 
 void BodySlideFrame::OnClose(wxCloseEvent& WXUNUSED(event)) {
+	SaveAUIPerspective();
+	m_auiMgr.UnInit();
+
 	app->CleanupPreview();
 	app->ClosePreview();
 
@@ -6103,16 +6121,8 @@ void BodySlideFrame::OnPreview(wxCommandEvent& WXUNUSED(event)) {
 	}
 }
 
-void BodySlideFrame::OnSashPosChanged(wxSplitterEvent& event) {
-	if (!IsVisible())
-		return;
-
-	int pos = event.GetSashPosition();
-	BodySlideConfig.SetValue("BodySlideFrame.sashpos", pos);
-	savedSashPosition = pos;
-	savedPreviewWidth = splitter->GetSize().GetWidth() - pos;
-	if (savedPreviewWidth > 0)
-		BodySlideConfig.SetValue("BodySlideFrame.previewWidth", savedPreviewWidth);
+void BodySlideFrame::OnSashPosChanged(wxSplitterEvent& WXUNUSED(event)) {
+	// No-op: AUI manages its own layout; perspective is saved on close.
 }
 
 void BodySlideFrame::OnPreviewPopout(wxCommandEvent& WXUNUSED(event)) {
@@ -6124,54 +6134,41 @@ void BodySlideFrame::OnPreviewWindowClosed() {
 }
 
 void BodySlideFrame::UnsplitPreview() {
-	if (!splitter || !splitter->IsSplit())
-		return;
-
-	savedSashPosition = splitter->GetSashPosition();
-	savedPreviewWidth = splitter->GetSize().GetWidth() - savedSashPosition;
-	BodySlideConfig.SetValue("BodySlideFrame.sashpos", savedSashPosition);
-	BodySlideConfig.SetValue("BodySlideFrame.previewWidth", savedPreviewWidth);
-	splitter->Unsplit(previewPanel);
-
-	if (savedPreviewWidth > 0) {
-		wxSize sz = GetSize();
-		sz.SetWidth(sz.GetWidth() - savedPreviewWidth);
-		SetSize(sz);
+	// Hide the preview pane in AUI
+	wxAuiPaneInfo& pane = m_auiMgr.GetPane("Preview");
+	if (pane.IsOk() && pane.IsShown()) {
+		pane.Hide();
+		m_auiMgr.Update();
+		SaveAUIPerspective();
 	}
 }
 
 void BodySlideFrame::SplitPreview(wxPanel* panel) {
-	if (!splitter || splitter->IsSplit())
-		return;
-
-	wxPanel* panelToSplit = panel ? panel : previewPanel;
-	if (!panelToSplit)
-		return;
-
-	int previewWidth = savedPreviewWidth;
-	if (previewWidth <= 0)
-		previewWidth = BodySlideConfig.GetIntValue("BodySlideFrame.previewWidth");
-	if (previewWidth <= 0)
-		previewWidth = 400;
-
-	int sashPos = savedSashPosition;
-	if (sashPos <= 0)
-		sashPos = BodySlideConfig.GetIntValue("BodySlideFrame.sashpos");
-	if (sashPos <= 0)
-		sashPos = GetClientSize().GetWidth();
-
-	wxSize sz = GetSize();
-	sz.SetWidth(sz.GetWidth() + previewWidth);
-	SetSize(sz);
-
-	panelToSplit->Show();
-	splitter->SplitVertically(leftPanel, panelToSplit, sashPos);
+	// Show the preview pane in AUI (panel arg ignored — AUI owns the center)
+	wxAuiPaneInfo& pane = m_auiMgr.GetPane("Preview");
+	if (pane.IsOk() && !pane.IsShown()) {
+		pane.Show();
+		m_auiMgr.Update();
+		SaveAUIPerspective();
+	}
 }
 
 void BodySlideFrame::UpdatePreviewButtonLabel() {
 	auto btn = (wxButton*)FindWindowByName("btnPreview", this);
 	if (btn)
 		btn->SetLabel(previewVisible ? _("Hide Preview") : _("Show Preview"));
+}
+
+void BodySlideFrame::SaveAUIPerspective() {
+	wxString perspective = m_auiMgr.SavePerspective();
+	BodySlideConfig.SetValue("BodySlideFrame.auiPerspective",
+	                         perspective.utf8_string());
+}
+
+void BodySlideFrame::RestoreAUIPerspective() {
+	std::string saved = BodySlideConfig["BodySlideFrame.auiPerspective"];
+	if (!saved.empty())
+		m_auiMgr.LoadPerspective(wxString::FromUTF8(saved), false);
 }
 
 void BodySlideFrame::OnBuildBodies(wxCommandEvent& WXUNUSED(event)) {

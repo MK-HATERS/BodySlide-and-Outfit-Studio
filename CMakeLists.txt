@@ -23,7 +23,7 @@ if(WIN32 AND DEFINED wxWidgets_ROOT_DIR AND wxWidgets_ROOT_DIR
 	endif()
 endif()
 
-set(BSOS_WX_COMPONENTS gl core base net xml xrc adv qa html propgrid)
+set(BSOS_WX_COMPONENTS gl core base net xml xrc adv qa html propgrid aui)
 find_package(wxWidgets CONFIG QUIET COMPONENTS ${BSOS_WX_COMPONENTS})
 if(wxWidgets_FOUND AND TARGET wx::base)
 	set(BSOS_WX_LIBRARIES
@@ -37,6 +37,7 @@ if(wxWidgets_FOUND AND TARGET wx::base)
 		wx::qa
 		wx::html
 		wx::propgrid
+		wx::aui
 	)
 else()
 	find_package(wxWidgets REQUIRED COMPONENTS ${BSOS_WX_COMPONENTS})
@@ -318,6 +319,9 @@ set(BSOS_BODYSLIDE_SOURCES
 	src/program/PreviewWindow.cpp
 	src/ui/PreviewPanel.cpp
 	src/ui/wxNormalsGenDlg.cpp
+	src/ui/BSTheme.cpp
+	src/ui/BSArtProvider.cpp
+	src/ui/BSLogPanel.cpp
 )
 
 if(WIN32)

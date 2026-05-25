@@ -34,7 +34,11 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #include "FSEngine/FSEngine.h"
 #include "FSEngine/FSManager.h"
+#include "../ui/BSTheme.h"
+#include "../ui/BSArtProvider.h"
+#include "../ui/BSLogPanel.h"
 
+#include <wx/aui/aui.h>
 #include <wx/clrpicker.h>
 #include <wx/cmdline.h>
 #include <wx/collpane.h>
@@ -432,18 +436,28 @@ public:
 	std::vector<std::string> presetChoiceNames;
 	bool populatingChoices = false;
 
-	// Splitter and embedded preview
-	wxSplitterWindow* splitter = nullptr;
-	wxPanel* leftPanel = nullptr;
-	PreviewPanel* previewPanel = nullptr;
-	bool previewVisible = true;
-	int savedSashPosition = -1;
-	int savedPreviewWidth = 0;
+	// AUI layout manager (replaces the old wxSplitterWindow)
+	wxAuiManager m_auiMgr;
+
+	// Pane panels
+	wxPanel*      leftPanel   = nullptr;  // slider/controls content
+	PreviewPanel* previewPanel= nullptr;
+	BSLogPanel*   logPanel    = nullptr;
+
+	// Legacy splitter shims (kept so existing code compiles unchanged)
+	wxSplitterWindow* splitter = nullptr; // nullptr when AUI is active
+	bool previewVisible  = true;
+	int  savedSashPosition = -1;
+	int  savedPreviewWidth = 0;
 
 	// Helpers for preview docking/undocking
 	void UnsplitPreview();
 	void SplitPreview(wxPanel* panel = nullptr);
 	void UpdatePreviewButtonLabel();
+
+	// AUI perspective save/load
+	void SaveAUIPerspective();
+	void RestoreAUIPerspective();
 
 	BodySlideFrame(BodySlideApp* app, const wxSize& size);
 	~BodySlideFrame() { delete fileCollisionMenu; }
