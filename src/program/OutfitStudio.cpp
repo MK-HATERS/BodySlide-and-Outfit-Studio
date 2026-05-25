@@ -5449,7 +5449,7 @@ void OutfitStudioFrame::OnImportNIFFromArchive(wxCommandEvent& WXUNUSED(event)) 
 		wxLogError("Failed to read '%s' from archive '%s'.",
 				   selPathStd.c_str(), selectedArchive->name().c_str());
 		wxMessageBox(
-			wxString::Format(_("Failed to read '%s' from archive."), selectedPath),
+			wxString(_("Failed to read '")) + selectedPath + _("' from archive."),
 			_("Archive Read Error"), wxOK | wxICON_ERROR, this);
 		return;
 	}
