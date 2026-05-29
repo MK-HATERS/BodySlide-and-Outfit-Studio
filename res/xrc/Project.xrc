@@ -652,8 +652,8 @@
 								<flag>wxALL</flag>
 								<border>5</border>
 								<object class="wxTextCtrl" name="sssRefTemplateFile">
-									<tooltip>Name of the XML file inside the project root to write the template entry into. Defaults to RefTemplates.xml.</tooltip>
-									<value>RefTemplates.xml</value>
+									<tooltip>XML file path relative to the project root. Defaults to RefTemplates/RefTemplates.xml.</tooltip>
+									<value>RefTemplates/RefTemplates.xml</value>
 								</object>
 							</object>
 						</object>

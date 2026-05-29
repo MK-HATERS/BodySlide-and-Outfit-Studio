@@ -2968,9 +2968,9 @@ bool OutfitStudioFrame::SaveProjectAs() {
 	wxString addToGroupVal     = XRCCTRL(dlg, "sssAddToGroup",         wxComboBox)->GetValue();
 	wxString groupFile         = XRCCTRL(dlg, "sssGroupFile",          wxTextCtrl)->GetValue();
 
-	// Normalize: empty refTemplateFile defaults to RefTemplates.xml
+	// Normalize: empty refTemplateFile defaults to RefTemplates/RefTemplates.xml
 	if (refTemplateFile.IsEmpty())
-		refTemplateFile = "RefTemplates.xml";
+		refTemplateFile = wxString("RefTemplates") + PathSepChar + "RefTemplates.xml";
 	// Ensure .xml extension
 	if (!refTemplateFile.EndsWith(".xml"))
 		refTemplateFile += ".xml";
@@ -4837,7 +4837,7 @@ void OutfitStudioFrame::AutoWriteRefTemplate(const std::string& ospFullPath,
 
 	std::string projectPath = GetProjectPath();
 	// xmlFileName is just a filename (possibly with subdirs); resolve relative to project root.
-	std::string resolvedXml = xmlFileName.empty() ? "RefTemplates.xml" : xmlFileName;
+	std::string resolvedXml = xmlFileName.empty() ? "RefTemplates/RefTemplates.xml" : xmlFileName;
 	std::string refTemplateFilePath = projectPath + "/" + resolvedXml;
 
 	// Make the .osp path relative to the project root so RefTemplates.xml stays portable.
