@@ -40,10 +40,14 @@ foreach ($pdb in $pdbs) {
 
 # ── res/ folder (XRC, shaders, images, skeletons) ───────────────────────────
 Write-Host "  DIR  res\"
+$destRes = Join-Path $Dest "res"
+if (Test-Path $destRes) { Remove-Item $destRes -Recurse -Force }
 Copy-Item (Join-Path $RepoRoot "res") $Dest -Recurse -Force
 
 # ── lang/ folder ─────────────────────────────────────────────────────────────
 Write-Host "  DIR  lang\"
+$destLang = Join-Path $Dest "lang"
+if (Test-Path $destLang) { Remove-Item $destLang -Recurse -Force }
 Copy-Item (Join-Path $RepoRoot "lang") $Dest -Recurse -Force
 
 Write-Host ""
