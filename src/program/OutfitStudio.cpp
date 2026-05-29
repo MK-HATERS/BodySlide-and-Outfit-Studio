@@ -1177,13 +1177,55 @@ void OutfitStudio::InitLanguage() {
 }
 
 void OutfitStudio::InitArchives() {
-	// Auto-detect archives
+	InvalidateNifCache();
 	FSManager::del();
 
 	std::vector<std::string> fileList;
 	GetArchiveFiles(fileList);
 
 	FSManager::addArchives(fileList);
+}
+
+void OutfitStudio::InvalidateNifCache() {
+	m_nifCache.clear();
+	m_nifCacheValid = false;
+}
+
+const std::vector<OutfitStudio::ArchiveNif>& OutfitStudio::GetNifCache() {
+	if (m_nifCacheValid)
+		return m_nifCache;
+
+	wxBusyCursor busy;
+	m_nifCache.clear();
+
+	// Only keep body/outfit-relevant subtrees; exclude crowd NPCs.
+	// pathLower is forward-slash normalized for consistent prefix checks.
+	auto isOutfitPath = [](const std::string& lower) -> bool {
+		if (lower.find("/crowd/") != std::string::npos) return false;
+		return lower.compare(0, 14, "meshes/actors/")  == 0 ||
+		       lower.compare(0, 13, "meshes/armor/")   == 0 ||
+		       lower.compare(0, 15, "meshes/clothes/") == 0;
+	};
+
+	for (FSArchiveFile* archive : FSManager::archiveList()) {
+		if (!archive) continue;
+		std::vector<std::string> tree;
+		archive->fileTree(tree);
+		for (auto& f : tree) {
+			if (f.size() < 4) continue;
+			std::string ext = f.substr(f.size() - 4);
+			for (char& c : ext) c = (char)std::tolower((unsigned char)c);
+			if (ext != ".nif") continue;
+			std::string lower = f;
+			for (char& c : lower) c = (char)std::tolower((unsigned char)c);
+			std::replace(lower.begin(), lower.end(), '\\', '/');
+			if (!isOutfitPath(lower)) continue;
+			m_nifCache.push_back({f, lower, archive});
+		}
+	}
+
+	m_nifCacheValid = true;
+	return m_nifCache;
 }
 
 void OutfitStudio::GetArchiveFiles(std::vector<std::string>& outList) {
@@ -2626,9 +2668,10 @@ bool OutfitStudioFrame::SaveProjectAs() {
 
 		auto targetGame = (TargetGame)Config.GetIntValue("TargetGame");
 		if (targetGame == SF) {
-			auto* morphPathCtrl  = XRCCTRL(dlg, "sssSFMorphPath",    wxTextCtrl);
-			auto* outPathCtrl    = XRCCTRL(dlg, "sssOutputDataPath", wxTextCtrl);
-			auto* outFileCtrl    = XRCCTRL(dlg, "sssOutputFileName",  wxTextCtrl);
+			auto* morphPathCtrl  = XRCCTRL(dlg, "sssSFMorphPath",         wxTextCtrl);
+			auto* outPathCtrl    = XRCCTRL(dlg, "sssOutputDataPath",       wxTextCtrl);
+			auto* outFileCtrl    = XRCCTRL(dlg, "sssOutputFileName",       wxTextCtrl);
+			auto* resolvedLabel  = XRCCTRL(dlg, "m_SFMorphPathResolved",   wxStaticText);
 
 			// Morph path = outputDataPath\outputFileName  (NIF path without extension).
 			// This is the Starfield convention: morph.dat lives in a folder whose name
@@ -2638,11 +2681,24 @@ bool OutfitStudioFrame::SaveProjectAs() {
 				return p + wxString(PathSepChar) + f;
 			};
 
+			wxString gameDataPath = wxString::FromUTF8(Config["GameDataPath"]);
+
+			// Shows the full absolute morph.dat path so the user can verify before saving.
+			auto refreshResolved = std::make_shared<std::function<void()>>([morphPathCtrl, resolvedLabel, gameDataPath]() {
+				wxString mp = morphPathCtrl->GetValue();
+				if (mp.IsEmpty() || gameDataPath.IsEmpty())
+					resolvedLabel->SetLabel(wxEmptyString);
+				else
+					resolvedLabel->SetLabel(gameDataPath + wxString(PathSepChar) + mp + wxString(PathSepChar) + "morph.dat");
+				resolvedLabel->GetParent()->Layout();
+			});
+
 			// Populate: use saved value, or infer from NIF output path when empty
 			wxString initPath = project->mSFMorphPath;
 			if (initPath.IsEmpty())
 				initPath = inferMorphPath(project->mGamePath, project->mGameFile);
 			morphPathCtrl->ChangeValue(initPath);
+			(*refreshResolved)();
 
 			// Auto-sync: while the user hasn't manually edited the morph path,
 			// keep it updated as they change the NIF output path or filename.
@@ -2650,13 +2706,15 @@ bool OutfitStudioFrame::SaveProjectAs() {
 			// re-clear the flag when we write the inferred value programmatically.
 			auto autoSync = std::make_shared<bool>(project->mSFMorphPath.IsEmpty());
 
-			morphPathCtrl->Bind(wxEVT_TEXT, [autoSync](wxCommandEvent&) {
+			morphPathCtrl->Bind(wxEVT_TEXT, [autoSync, refreshResolved](wxCommandEvent&) {
 				*autoSync = false;
+				(*refreshResolved)();
 			});
 
-			auto syncFn = [morphPathCtrl, outPathCtrl, outFileCtrl, autoSync, inferMorphPath](wxCommandEvent&) {
+			auto syncFn = [morphPathCtrl, outPathCtrl, outFileCtrl, autoSync, inferMorphPath, refreshResolved](wxCommandEvent&) {
 				if (!*autoSync) return;
 				morphPathCtrl->ChangeValue(inferMorphPath(outPathCtrl->GetValue(), outFileCtrl->GetValue()));
+				(*refreshResolved)();
 			};
 			outPathCtrl->Bind(wxEVT_TEXT, syncFn);
 			outFileCtrl->Bind(wxEVT_TEXT, syncFn);
@@ -2688,11 +2746,12 @@ bool OutfitStudioFrame::SaveProjectAs() {
 			}
 		}
 		else {
-			XRCCTRL(dlg, "m_SFMorphPathLabel", wxStaticText)->Hide();
-			XRCCTRL(dlg, "sssSFMorphPath", wxTextCtrl)->Hide();
-			XRCCTRL(dlg, "sssSFMorphPathBrowse", wxButton)->Hide();
+			XRCCTRL(dlg, "m_SFMorphPathLabel",       wxStaticText)->Hide();
+			XRCCTRL(dlg, "sssSFMorphPath",            wxTextCtrl)->Hide();
+			XRCCTRL(dlg, "sssSFMorphPathBrowse",      wxButton)->Hide();
 			XRCCTRL(dlg, "m_SFMorphTargetShapeLabel", wxStaticText)->Hide();
-			XRCCTRL(dlg, "sssSFMorphTargetShape", wxChoice)->Hide();
+			XRCCTRL(dlg, "sssSFMorphTargetShape",     wxChoice)->Hide();
+			XRCCTRL(dlg, "m_SFMorphPathResolved",     wxStaticText)->Hide();
 		}
 
 		if (!project->GetBaseShape()) {
@@ -5403,30 +5462,12 @@ void OutfitStudioFrame::OnImportNIF(wxCommandEvent& WXUNUSED(event)) {
 }
 
 void OutfitStudioFrame::OnImportNIFFromArchive(wxCommandEvent& WXUNUSED(event)) {
-	// ── 1. Collect every NIF entry from all open BA2/BSA archives ──────────────
-	struct ArchiveNif {
-		std::string path;    // archive-relative path, e.g. "meshes/actors/..."
-		FSArchiveFile* archive;
-	};
-	std::vector<ArchiveNif> allNifs;
-
-	auto archiveList = FSManager::archiveList();
-	int archivesScanned = 0;
-
-	for (FSArchiveFile* archive : archiveList) {
-		if (!archive) continue;
-		++archivesScanned;
-		std::vector<std::string> tree;
-		archive->fileTree(tree);
-		for (auto& f : tree) {
-			// Skip the first entry which is the archive name itself, and folder entries
-			if (f.size() >= 4 && ToLower(f.substr(f.size() - 4)) == ".nif")
-				allNifs.push_back({f, archive});
-		}
-	}
+	// ── 1. Get NIF list from cache (built once, reused on every open) ───────────
+	const auto& allNifs = wxGetApp().GetNifCache();
 
 	if (allNifs.empty()) {
-		if (archivesScanned == 0) {
+		auto archiveList = FSManager::archiveList();
+		if (archiveList.empty()) {
 			wxMessageBox(
 				_("No archives are currently loaded.\n\n"
 				  "Go to Settings and check the archive files you want to load under 'Data Files'."),
@@ -5436,10 +5477,10 @@ void OutfitStudioFrame::OnImportNIFFromArchive(wxCommandEvent& WXUNUSED(event)) 
 		else {
 			wxMessageBox(
 				wxString::Format(
-					_("No NIF files found in the %d loaded archive(s).\n\n"
+					_("No NIF files found in the %zu loaded archive(s).\n\n"
 					  "The checked archives (texture/shader/sound archives) do not contain mesh files.\n"
 					  "In Settings > Data Files, also check any 'Main' or 'Meshes' archives for the game and DLCs."),
-					archivesScanned),
+					archiveList.size()),
 				_("Import from Archive"),
 				wxOK | wxICON_INFORMATION, this);
 		}
@@ -5462,14 +5503,18 @@ void OutfitStudioFrame::OnImportNIFFromArchive(wxCommandEvent& WXUNUSED(event)) 
 
 	auto* countLbl = new wxStaticText(&dlg, wxID_ANY, wxEmptyString);
 
-	// Build initial list
+	// Batch-populate the listbox — pre-lowercased paths avoid per-item wxString::Lower()
 	auto populate = [&](const wxString& filter) {
-		listBox->Clear();
+		std::string filterLower{filter.Lower().ToUTF8()};
+		wxArrayString items;
+		items.Alloc(allNifs.size());
 		for (const auto& n : allNifs) {
-			wxString p = wxString::FromUTF8(n.path);
-			if (filter.empty() || p.Lower().Contains(filter.Lower()))
-				listBox->Append(p);
+			if (filterLower.empty() || n.pathLower.find(filterLower) != std::string::npos)
+				items.Add(wxString::FromUTF8(n.path));
 		}
+		listBox->Freeze();
+		listBox->Set(items);
+		listBox->Thaw();
 		countLbl->SetLabel(wxString::Format(_("%zu files shown"), (size_t)listBox->GetCount()));
 	};
 	populate(wxEmptyString);

@@ -900,10 +900,22 @@ public:
 	void InitArchives();
 	void GetArchiveFiles(std::vector<std::string>& outList);
 
+	// NIF entries across all loaded archives. Built lazily, invalidated on InitArchives().
+	struct ArchiveNif {
+		std::string path;      // original-case archive-relative path
+		std::string pathLower; // pre-lowercased for fast filter matching
+		FSArchiveFile* archive;
+	};
+	const std::vector<ArchiveNif>& GetNifCache();
+	void InvalidateNifCache();
+
 	TargetGame targetGame = TargetGame::FO3;
 
 private:
 	OutfitStudioFrame* frame = nullptr;
+
+	std::vector<ArchiveNif> m_nifCache;
+	bool m_nifCacheValid = false;
 
 	Log logger;
 	wxLocale* locale = nullptr;

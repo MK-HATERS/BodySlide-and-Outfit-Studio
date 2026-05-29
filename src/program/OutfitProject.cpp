@@ -3000,6 +3000,19 @@ int OutfitProject::LoadReferenceNif(const std::string& fileName, const std::stri
 					 owner);
 	}
 
+	// Infer output path from this reference NIF if none has been set yet
+	// (covers the workflow where only a reference NIF is loaded, no outfit NIF imported)
+	if (mGamePath.IsEmpty()) {
+		wxFileName refFile(wxString::FromUTF8(fileName));
+		mGameFile = refFile.GetName();
+		mGamePath = refFile.GetPath();
+		int pos = mGamePath.Lower().Find("meshes");
+		if (pos != wxNOT_FOUND)
+			mGamePath = mGamePath.Mid(pos);
+		else
+			mGamePath.Clear();
+	}
+
 	return 0;
 }
 
