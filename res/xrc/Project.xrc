@@ -429,7 +429,7 @@
 								<flag>wxALL</flag>
 								<border>5</border>
 								<object class="wxTextCtrl" name="sssSFMorphPath">
-									<tooltip>Starfield morph.dat output folder relative to the game data path (e.g. meshes\morphs\human\female\chargen\body). Leave empty to skip morph.dat output.</tooltip>
+									<tooltip>Starfield morph.dat output folder relative to the game data path. Auto-filled from Output Data Path + Output Filename (edit either to update). Clear to skip morph.dat output.</tooltip>
 									<value></value>
 								</object>
 							</object>

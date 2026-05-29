@@ -2626,18 +2626,62 @@ bool OutfitStudioFrame::SaveProjectAs() {
 
 		auto targetGame = (TargetGame)Config.GetIntValue("TargetGame");
 		if (targetGame == SF) {
-			XRCCTRL(dlg, "sssSFMorphPath", wxTextCtrl)->ChangeValue(project->mSFMorphPath);
+			auto* morphPathCtrl  = XRCCTRL(dlg, "sssSFMorphPath",    wxTextCtrl);
+			auto* outPathCtrl    = XRCCTRL(dlg, "sssOutputDataPath", wxTextCtrl);
+			auto* outFileCtrl    = XRCCTRL(dlg, "sssOutputFileName",  wxTextCtrl);
+
+			// Morph path = outputDataPath\outputFileName  (NIF path without extension).
+			// This is the Starfield convention: morph.dat lives in a folder whose name
+			// matches the NIF file (e.g. meshes\armor\foo\body → meshes\armor\foo\body\morph.dat).
+			auto inferMorphPath = [](const wxString& p, const wxString& f) -> wxString {
+				if (p.IsEmpty() || f.IsEmpty()) return wxEmptyString;
+				return p + wxString(PathSepChar) + f;
+			};
+
+			// Populate: use saved value, or infer from NIF output path when empty
+			wxString initPath = project->mSFMorphPath;
+			if (initPath.IsEmpty())
+				initPath = inferMorphPath(project->mGamePath, project->mGameFile);
+			morphPathCtrl->ChangeValue(initPath);
+
+			// Auto-sync: while the user hasn't manually edited the morph path,
+			// keep it updated as they change the NIF output path or filename.
+			// ChangeValue() does not fire wxEVT_TEXT, so the handler below won't
+			// re-clear the flag when we write the inferred value programmatically.
+			auto autoSync = std::make_shared<bool>(project->mSFMorphPath.IsEmpty());
+
+			morphPathCtrl->Bind(wxEVT_TEXT, [autoSync](wxCommandEvent&) {
+				*autoSync = false;
+			});
+
+			auto syncFn = [morphPathCtrl, outPathCtrl, outFileCtrl, autoSync, inferMorphPath](wxCommandEvent&) {
+				if (!*autoSync) return;
+				morphPathCtrl->ChangeValue(inferMorphPath(outPathCtrl->GetValue(), outFileCtrl->GetValue()));
+			};
+			outPathCtrl->Bind(wxEVT_TEXT, syncFn);
+			outFileCtrl->Bind(wxEVT_TEXT, syncFn);
 
 			// Populate morph target shape dropdown
 			wxChoice* morphShapeChoice = XRCCTRL(dlg, "sssSFMorphTargetShape", wxChoice);
 			morphShapeChoice->Append("(None)");
-			for (auto& s : project->GetWorkNif()->GetShapes())
+			NiShape* baseShape = project->GetBaseShape();
+			int firstNonRefIdx = wxNOT_FOUND;
+			int shapeIdx = 1; // 0 is "(None)"
+			for (auto& s : project->GetWorkNif()->GetShapes()) {
 				morphShapeChoice->Append(wxString::FromUTF8(s->name.get()));
+				if (firstNonRefIdx == wxNOT_FOUND && s != baseShape)
+					firstNonRefIdx = shapeIdx;
+				++shapeIdx;
+			}
 
-			// Select previously saved shape, or default to (None)
 			if (!project->mSFMorphTargetShape.empty()) {
+				// Restore saved selection
 				int sel = morphShapeChoice->FindString(project->mSFMorphTargetShape);
 				morphShapeChoice->SetSelection(sel != wxNOT_FOUND ? sel : 0);
+			}
+			else if (firstNonRefIdx != wxNOT_FOUND) {
+				// Auto-select first non-reference shape
+				morphShapeChoice->SetSelection(firstNonRefIdx);
 			}
 			else {
 				morphShapeChoice->SetSelection(0);
