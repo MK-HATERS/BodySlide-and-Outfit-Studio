@@ -1458,201 +1458,210 @@ bool BodySlideApp::WriteMorphTRI(const std::string& triPath, SliderSet& sliderSe
 
 bool BodySlideApp::WriteSFMorphFile(const std::string& morphFolder, SliderSet& sliderSet, NifFile& nif, std::unordered_map<std::string, std::vector<uint16_t>>& zapIndices) {
 	std::string targetShapeName = sliderSet.GetSFMorphTargetShape();
-	if (targetShapeName.empty()) {
-		wxLogMessage("No morph target shape designated, skipping morph.dat.");
-		return false;
-	}
-
-	wxLogMessage("Writing Starfield morph.dat for shape '%s' to '%s'...", targetShapeName, morphFolder);
+	// Empty targetShapeName = "all shapes" mode: write chargen/<shape>/morph.dat for every shape.
 
 	DiffDataSets currentDiffs;
 	sliderSet.LoadSetDiffData(currentDiffs);
 
-	// Find the designated shape in the slider set
-	std::string targetDataShape;
-	for (auto it = sliderSet.ShapesBegin(); it != sliderSet.ShapesEnd(); ++it) {
-		if (it->first == targetShapeName) {
-			targetDataShape = it->second.targetShape;
-			break;
-		}
-	}
-
-	if (targetDataShape.empty()) {
-		wxLogMessage("Morph target shape '%s' not found in slider set, skipping morph.dat.", targetShapeName);
-		return false;
-	}
-
-	auto shape = nif.FindBlockByName<NiShape>(targetShapeName);
-	if (!shape) {
-		wxLogMessage("Shape '%s' not found in NIF, skipping morph.dat.", targetShapeName);
-		return false;
-	}
-
-	const std::vector<uint16_t>& shapeZapIndices = zapIndices[targetShapeName];
-
-	int shapeVertCount = shape->GetNumVertices();
-	shapeVertCount += shapeZapIndices.size();
-
-	if (shapeVertCount <= 0)
-		return false;
-
-	if (shapeZapIndices.size() > 0 && shapeZapIndices.back() >= shapeVertCount)
-		return false;
-
-	auto zapRanges = FindContinuousRanges(shapeZapIndices);
-
-	std::vector<Vector3> baseVerts;
-	std::vector<Vector2> baseUVs;
-	std::vector<Triangle> baseTris;
-	nif.GetVertsForShape(shape, baseVerts);
-	nif.GetUvsForShape(shape, baseUVs);
-	shape->GetTriangles(baseTris);
-
-	// Read base vertex colors once — used to populate targetVertColor in morph.dat.
-	// In Starfield, targetVertColor is the *absolute* target vertex color when a morph is
-	// fully applied (weight = 1.0).  The engine lerps the base color toward this value.
-	// By setting it to the unmodified base color we express "no color change" for every
-	// BodySlide-generated morph, which is correct for pure shape presets.  Shapes without
-	// vertex colors produce an empty vector and the map below stays empty (no overhead).
-	std::vector<Color4> baseColors;
-	nif.GetColorsForShape(shape, baseColors);
-
-	SFMorphFile morphFile;
-	const uint32_t effectiveVertCount = shapeVertCount - static_cast<int>(shapeZapIndices.size());
-	morphFile.SetVertexCount(effectiveVertCount);
-
-	// Warn early if the shape exceeds the morph.dat 16-bit vertex index limit.
-	// CacheToFileData() will silently truncate at 65535; we surface it here where wx logging
-	// is available so the user knows their morph will be incomplete.
-	constexpr uint32_t kMaxMorphVerts = std::numeric_limits<uint16_t>::max();
-	if (effectiveVertCount > kMaxMorphVerts) {
-		wxLogError(
-			"Shape '%s' has %u vertices after zaps, exceeding the morph.dat limit of %u. "
-			"The morph will be truncated — consider splitting the shape.",
-			targetShapeName, effectiveVertCount, kMaxMorphVerts);
-	}
-
-	for (size_t s = 0; s < sliderSet.size(); s++) {
-		std::string dn = sliderSet[s].TargetDataName(targetDataShape);
-		if (dn.empty())
-			continue;
-
-		if (sliderSet[s].bClamp || sliderSet[s].bZap || sliderSet[s].bUV)
-			continue;
-
-		std::vector<Vector3> diffs;
-		diffs.resize(shapeVertCount);
-
-		currentDiffs.ApplyDiff(dn, targetDataShape, 1.0f, &diffs);
-
-		for (auto range = zapRanges.rbegin(); range != zapRanges.rend(); ++range) {
-			const auto start = diffs.cbegin() + range->index;
-			diffs.erase(start, start + range->length);
+	// Writes morph.dat for one shape into outputFolder (creates dir + morph.dat).
+	auto processShape = [&](const std::string& shapeName, const std::string& targetDataShape, const std::string& outputFolder) -> bool {
+		auto shape = nif.FindBlockByName<NiShape>(shapeName);
+		if (!shape) {
+			wxLogMessage("Shape '%s' not found in NIF, skipping morph.dat.", shapeName);
+			return false;
 		}
 
-		std::unordered_map<uint16_t, Vector3> morphOffsets;
-		int i = 0;
-		for (auto& d : diffs) {
-			if (!d.IsZero(true))
-				morphOffsets.emplace(i, d);
-			i++;
+		const std::vector<uint16_t>& shapeZapIndices = zapIndices[shapeName];
+
+		int shapeVertCount = shape->GetNumVertices();
+		shapeVertCount += static_cast<int>(shapeZapIndices.size());
+
+		if (shapeVertCount <= 0)
+			return false;
+
+		if (!shapeZapIndices.empty() && shapeZapIndices.back() >= static_cast<uint16_t>(shapeVertCount))
+			return false;
+
+		auto zapRanges = FindContinuousRanges(shapeZapIndices);
+
+		std::vector<Vector3> baseVerts;
+		std::vector<Vector2> baseUVs;
+		std::vector<Triangle> baseTris;
+		nif.GetVertsForShape(shape, baseVerts);
+		nif.GetUvsForShape(shape, baseUVs);
+		shape->GetTriangles(baseTris);
+
+		// Read base vertex colors once — used to populate targetVertColor in morph.dat.
+		// In Starfield, targetVertColor is the *absolute* target vertex color when a morph is
+		// fully applied (weight = 1.0).  The engine lerps the base color toward this value.
+		// By setting it to the unmodified base color we express "no color change" for every
+		// BodySlide-generated morph, which is correct for pure shape presets.  Shapes without
+		// vertex colors produce an empty vector and the map below stays empty (no overhead).
+		std::vector<Color4> baseColors;
+		nif.GetColorsForShape(shape, baseColors);
+
+		SFMorphFile morphFile;
+		const uint32_t effectiveVertCount = shapeVertCount - static_cast<int>(shapeZapIndices.size());
+		morphFile.SetVertexCount(effectiveVertCount);
+
+		// Warn early if the shape exceeds the morph.dat 16-bit vertex index limit.
+		constexpr uint32_t kMaxMorphVerts = std::numeric_limits<uint16_t>::max();
+		if (effectiveVertCount > kMaxMorphVerts) {
+			wxLogError(
+				"Shape '%s' has %u vertices after zaps, exceeding the morph.dat limit of %u. "
+				"The morph will be truncated — consider splitting the shape.",
+				shapeName, effectiveVertCount, kMaxMorphVerts);
 		}
 
-		if (morphOffsets.empty())
-			continue;
+		for (size_t s = 0; s < sliderSet.size(); s++) {
+			std::string dn = sliderSet[s].TargetDataName(targetDataShape);
+			if (dn.empty())
+				continue;
 
-		std::unordered_map<uint16_t, Vector3> morphNormals;
-		std::unordered_map<uint16_t, Vector3> morphTangents;
+			if (sliderSet[s].bClamp || sliderSet[s].bZap || sliderSet[s].bUV)
+				continue;
 
-		std::vector<Vector3> morphedVerts = baseVerts;
+			std::vector<Vector3> diffs;
+			diffs.resize(shapeVertCount);
 
-		if (morphedVerts.size() == diffs.size()) {
-			for (size_t v = 0; v < morphedVerts.size(); v++)
-				morphedVerts[v] += diffs[v];
-		}
+			currentDiffs.ApplyDiff(dn, targetDataShape, 1.0f, &diffs);
 
-		int nVerts = static_cast<int>(morphedVerts.size());
-		int nTris = static_cast<int>(baseTris.size());
+			for (auto range = zapRanges.rbegin(); range != zapRanges.rend(); ++range) {
+				const auto start = diffs.cbegin() + range->index;
+				diffs.erase(start, start + range->length);
+			}
 
-		if (nVerts > 0 && nTris > 0) {
-			Mesh tmpMesh{};
-			tmpMesh.nVerts = nVerts;
-			tmpMesh.nTris = nTris;
-			tmpMesh.verts = std::make_unique<Vector3[]>(nVerts);
-			tmpMesh.norms = std::make_unique<Vector3[]>(nVerts);
-			tmpMesh.tangents = std::make_unique<Vector3[]>(nVerts);
-			tmpMesh.bitangents = std::make_unique<Vector3[]>(nVerts);
-			tmpMesh.texcoord = std::make_unique<Vector2[]>(nVerts);
+			std::unordered_map<uint16_t, Vector3> morphOffsets;
+			int i = 0;
+			for (auto& d : diffs) {
+				if (!d.IsZero(true))
+					morphOffsets.emplace(i, d);
+				i++;
+			}
 
-			if (nTris > 0)
-				tmpMesh.tris = std::make_unique<Triangle[]>(nTris);
+			if (morphOffsets.empty())
+				continue;
 
-			for (int v = 0; v < nVerts; v++)
-				tmpMesh.verts[v] = Mesh::TransformPosNifToMesh(morphedVerts[v]);
+			std::unordered_map<uint16_t, Vector3> morphNormals;
+			std::unordered_map<uint16_t, Vector3> morphTangents;
 
-			if (!baseUVs.empty()) {
-				for (int v = 0; v < nVerts && v < static_cast<int>(baseUVs.size()); v++) {
-					tmpMesh.texcoord[v].u = baseUVs[v].u;
-					tmpMesh.texcoord[v].v = baseUVs[v].v;
+			std::vector<Vector3> morphedVerts = baseVerts;
+
+			if (morphedVerts.size() == diffs.size()) {
+				for (size_t v = 0; v < morphedVerts.size(); v++)
+					morphedVerts[v] += diffs[v];
+			}
+
+			int nVerts = static_cast<int>(morphedVerts.size());
+			int nTris = static_cast<int>(baseTris.size());
+
+			if (nVerts > 0 && nTris > 0) {
+				Mesh tmpMesh{};
+				tmpMesh.nVerts = nVerts;
+				tmpMesh.nTris = nTris;
+				tmpMesh.verts = std::make_unique<Vector3[]>(nVerts);
+				tmpMesh.norms = std::make_unique<Vector3[]>(nVerts);
+				tmpMesh.tangents = std::make_unique<Vector3[]>(nVerts);
+				tmpMesh.bitangents = std::make_unique<Vector3[]>(nVerts);
+				tmpMesh.texcoord = std::make_unique<Vector2[]>(nVerts);
+
+				if (nTris > 0)
+					tmpMesh.tris = std::make_unique<Triangle[]>(nTris);
+
+				for (int v = 0; v < nVerts; v++)
+					tmpMesh.verts[v] = Mesh::TransformPosNifToMesh(morphedVerts[v]);
+
+				if (!baseUVs.empty()) {
+					for (int v = 0; v < nVerts && v < static_cast<int>(baseUVs.size()); v++) {
+						tmpMesh.texcoord[v].u = baseUVs[v].u;
+						tmpMesh.texcoord[v].v = baseUVs[v].v;
+					}
+				}
+
+				for (int t = 0; t < nTris; t++)
+					tmpMesh.tris[t] = baseTris[t];
+
+				tmpMesh.SmoothNormals();
+
+				for (const auto& morphOffset : morphOffsets) {
+					const int v = morphOffset.first;
+					if (v >= 0 && v < nVerts) {
+						morphNormals[v] = Mesh::TransformDirMeshToNif(tmpMesh.norms[v]);
+						morphTangents[v] = Mesh::TransformDirMeshToNif(tmpMesh.tangents[v]);
+					}
 				}
 			}
 
-			for (int t = 0; t < nTris; t++)
-				tmpMesh.tris[t] = baseTris[t];
-
-			tmpMesh.SmoothNormals();
-
-			for (const auto& morphOffset : morphOffsets) {
-				const int v = morphOffset.first;
-				if (v >= 0 && v < nVerts) {
-					morphNormals[v] = Mesh::TransformDirMeshToNif(tmpMesh.norms[v]);
-					morphTangents[v] = Mesh::TransformDirMeshToNif(tmpMesh.tangents[v]);
+			// Populate targetVertColor for every morphed vertex.
+			// Starfield lerps the shape's vertex color toward targetVertColor at morph weight 1.0.
+			// We set targetVertColor == the shape's unmodified base color, meaning "no color shift"
+			// for BodySlide-generated presets.  Shapes without vertex color data leave this empty
+			// and CacheToFileData will write 0 for those entries (no color channel in the file).
+			std::unordered_map<uint16_t, Color3> morphColors;
+			if (!baseColors.empty()) {
+				for (const auto& morphOffset : morphOffsets) {
+					const uint16_t v = morphOffset.first;
+					if (v < static_cast<uint16_t>(baseColors.size())) {
+						const Color4& c = baseColors[v];
+						morphColors[v] = Color3(c.r, c.g, c.b);
+					}
 				}
 			}
+
+			morphFile.AddMorph(sliderSet[s].name, morphOffsets, morphColors, morphNormals, morphTangents);
 		}
 
-		// Populate targetVertColor for every morphed vertex.
-		// Starfield lerps the shape's vertex color toward targetVertColor at morph weight 1.0.
-		// We set targetVertColor == the shape's unmodified base color, meaning "no color shift"
-		// for BodySlide-generated presets.  Shapes without vertex color data leave this empty
-		// and CacheToFileData will write 0 for those entries (no color channel in the file).
-		std::unordered_map<uint16_t, Color3> morphColors;
-		if (!baseColors.empty()) {
-			for (const auto& morphOffset : morphOffsets) {
-				const uint16_t v = morphOffset.first;
-				if (v < static_cast<uint16_t>(baseColors.size())) {
-					const Color4& c = baseColors[v];
-					morphColors[v] = Color3(c.r, c.g, c.b);
-				}
+		if (morphFile.morphOffsetsCache.empty()) {
+			wxLogMessage("No morphs found for shape '%s', skipping morph.dat.", shapeName);
+			return false;
+		}
+
+		wxLogMessage("Writing %zu morph(s) for shape '%s'...", morphFile.morphOffsetsCache.size(), shapeName);
+
+		wxFileName::Mkdir(wxString::FromUTF8(outputFolder), wxS_DIR_DEFAULT, wxPATH_MKDIR_FULL);
+
+		std::string shapeFilePath = outputFolder + PathSepStr + "morph.dat";
+
+		morphFile.CacheToFileData();
+
+		if (!morphFile.Write(shapeFilePath)) {
+			wxLogError("Failed to write morph.dat file to '%s'!", shapeFilePath);
+			wxMessageBox(wxString().Format(_("Failed to write morph.dat file to the following location\n\n%s"), shapeFilePath),
+						 _("Unable to process"), wxOK | wxICON_ERROR);
+			return false;
+		}
+
+		wxLogMessage("Successfully wrote morph.dat to '%s'.", shapeFilePath);
+		return true;
+	};
+
+	if (!targetShapeName.empty()) {
+		// Single-shape mode: write to morphFolder/morph.dat directly.
+		wxLogMessage("Writing Starfield morph.dat for shape '%s' to '%s'...", targetShapeName, morphFolder);
+
+		std::string targetDataShape;
+		for (auto it = sliderSet.ShapesBegin(); it != sliderSet.ShapesEnd(); ++it) {
+			if (it->first == targetShapeName) {
+				targetDataShape = it->second.targetShape;
+				break;
 			}
 		}
-
-		morphFile.AddMorph(sliderSet[s].name, morphOffsets, morphColors, morphNormals, morphTangents);
+		if (targetDataShape.empty()) {
+			wxLogMessage("Morph target shape '%s' not found in slider set, skipping morph.dat.", targetShapeName);
+			return false;
+		}
+		return processShape(targetShapeName, targetDataShape, morphFolder);
 	}
-
-	if (morphFile.morphOffsetsCache.empty()) {
-		wxLogMessage("No morphs found for shape '%s', skipping morph.dat.", targetShapeName);
-		return false;
+	else {
+		// All-shapes mode: write morphFolder/chargen/<shapeName>/morph.dat for every shape.
+		wxLogMessage("Writing Starfield morph.dat (all shapes) to base '%s'...", morphFolder);
+		bool anySuccess = false;
+		for (auto it = sliderSet.ShapesBegin(); it != sliderSet.ShapesEnd(); ++it) {
+			std::string shapeFolder = morphFolder + PathSepStr + "chargen" + PathSepStr + it->first;
+			anySuccess |= processShape(it->first, it->second.targetShape, shapeFolder);
+		}
+		return anySuccess;
 	}
-
-	wxLogMessage("Writing %zu morph(s) for shape '%s'...", morphFile.morphOffsetsCache.size(), targetShapeName);
-
-	wxFileName::Mkdir(wxString::FromUTF8(morphFolder), wxS_DIR_DEFAULT, wxPATH_MKDIR_FULL);
-
-	std::string shapeFilePath = morphFolder + PathSepStr + "morph.dat";
-
-	morphFile.CacheToFileData();
-
-	if (!morphFile.Write(shapeFilePath)) {
-		wxLogError("Failed to write morph.dat file to '%s'!", shapeFilePath);
-		wxMessageBox(wxString().Format(_("Failed to write morph.dat file to the following location\n\n%s"), shapeFilePath),
-					 _("Unable to process"), wxOK | wxICON_ERROR);
-		return false;
-	}
-
-	wxLogMessage("Successfully wrote morph.dat to '%s'.", shapeFilePath);
-
-	return true;
 }
 
 void BodySlideApp::CopySliderValues(bool toHigh) {
@@ -3641,8 +3650,7 @@ int BodySlideApp::BuildBodies(bool localPath, bool clean, bool tri, bool forceNo
 	if (targetGame == SF) {
 		/* Write Starfield morph.dat file */
 		std::string sfMorphPath = activeSet.GetSFMorphPath();
-		std::string sfMorphTargetShape = activeSet.GetSFMorphTargetShape();
-		if (tri && !triKeep && !sfMorphPath.empty() && !sfMorphTargetShape.empty()) {
+		if (tri && !triKeep && !sfMorphPath.empty()) {
 			std::string outDataPath = GetOutputDataPath();
 			std::string morphFolder = outDataPath + sfMorphPath;
 			WriteSFMorphFile(morphFolder, activeSet, nifBig, zapIdxAll);
@@ -4540,8 +4548,7 @@ int BodySlideApp::BuildListBodies(
 		if (targetGame == SF) {
 			/* Write Starfield morph.dat file */
 			std::string sfMorphPath = currentSet.GetSFMorphPath();
-			std::string sfMorphTargetShape = currentSet.GetSFMorphTargetShape();
-			if (tri && !triKeep && !sfMorphPath.empty() && !sfMorphTargetShape.empty()) {
+			if (tri && !triKeep && !sfMorphPath.empty()) {
 				std::string morphFolder = datapath + sfMorphPath;
 				WriteSFMorphFile(morphFolder, currentSet, nifBig, zapIdxAll);
 			}

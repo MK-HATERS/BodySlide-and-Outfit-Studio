@@ -2673,25 +2673,102 @@ bool OutfitStudioFrame::SaveProjectAs() {
 			auto* outFileCtrl    = XRCCTRL(dlg, "sssOutputFileName",       wxTextCtrl);
 			auto* resolvedLabel  = XRCCTRL(dlg, "m_SFMorphPathResolved",   wxStaticText);
 
-			// Morph path = outputDataPath\outputFileName  (NIF path without extension).
-			// This is the Starfield convention: morph.dat lives in a folder whose name
-			// matches the NIF file (e.g. meshes\armor\foo\body → meshes\armor\foo\body\morph.dat).
+			// For outfit NIFs (clothes/armor): infer morph base as meshes\morphs\<rest>\<file>.
+			// For all other paths: fall back to path\file (existing body behavior).
 			auto inferMorphPath = [](const wxString& p, const wxString& f) -> wxString {
 				if (p.IsEmpty() || f.IsEmpty()) return wxEmptyString;
+				wxString pLower = p.Lower();
+				int meshesPos = pLower.Find("meshes");
+				if (meshesPos != wxNOT_FOUND) {
+					wxString afterMeshes = p.Mid(meshesPos + 6);
+					if (!afterMeshes.IsEmpty() && (afterMeshes[0] == '\\' || afterMeshes[0] == '/'))
+						afterMeshes = afterMeshes.Mid(1);
+					wxString afterLower = afterMeshes.Lower();
+					if (afterLower.StartsWith("clothes") || afterLower.StartsWith("armor")) {
+						return wxString("meshes") + PathSepChar + "morphs" + PathSepChar + afterMeshes + PathSepChar + f;
+					}
+				}
 				return p + wxString(PathSepChar) + f;
+			};
+
+			// Returns true if the game output path is an outfit (clothes/armor) path.
+			auto isOutfitPath = [](const wxString& p) -> bool {
+				wxString pLower = p.Lower();
+				int meshesPos = pLower.Find("meshes");
+				if (meshesPos == wxNOT_FOUND) return false;
+				wxString after = pLower.Mid(meshesPos + 6);
+				if (!after.IsEmpty() && (after[0] == '\\' || after[0] == '/'))
+					after = after.Mid(1);
+				return after.StartsWith("clothes") || after.StartsWith("armor");
 			};
 
 			wxString gameDataPath = wxString::FromUTF8(Config["GameDataPath"]);
 
-			// Shows the full absolute morph.dat path so the user can verify before saving.
-			auto refreshResolved = std::make_shared<std::function<void()>>([morphPathCtrl, resolvedLabel, gameDataPath]() {
-				wxString mp = morphPathCtrl->GetValue();
-				if (mp.IsEmpty() || gameDataPath.IsEmpty())
-					resolvedLabel->SetLabel(wxEmptyString);
-				else
-					resolvedLabel->SetLabel(gameDataPath + wxString(PathSepChar) + mp + wxString(PathSepChar) + "morph.dat");
-				resolvedLabel->GetParent()->Layout();
-			});
+			// Populate morph target shape dropdown first so refreshResolved can read it.
+			wxChoice* morphShapeChoice = XRCCTRL(dlg, "sssSFMorphTargetShape", wxChoice);
+			morphShapeChoice->Append(_("(All shapes)"));
+			NiShape* baseShape = project->GetBaseShape();
+			int firstNonRefIdx = wxNOT_FOUND;
+			int shapeIdx = 1; // 0 is "(All shapes)"
+
+			// Collect non-ref shape names for display in the resolved label.
+			std::vector<wxString> nonRefShapeNames;
+			for (auto& s : project->GetWorkNif()->GetShapes()) {
+				wxString sName = wxString::FromUTF8(s->name.get());
+				morphShapeChoice->Append(sName);
+				if (s != baseShape) {
+					if (firstNonRefIdx == wxNOT_FOUND)
+						firstNonRefIdx = shapeIdx;
+					nonRefShapeNames.push_back(sName);
+				}
+				++shapeIdx;
+			}
+
+			if (!project->mSFMorphTargetShape.empty()) {
+				int sel = morphShapeChoice->FindString(project->mSFMorphTargetShape);
+				morphShapeChoice->SetSelection(sel != wxNOT_FOUND ? sel : 0);
+			}
+			else if (isOutfitPath(project->mGamePath)) {
+				// Outfit NIFs default to all-shapes mode.
+				morphShapeChoice->SetSelection(0);
+			}
+			else if (firstNonRefIdx != wxNOT_FOUND) {
+				morphShapeChoice->SetSelection(firstNonRefIdx);
+			}
+			else {
+				morphShapeChoice->SetSelection(0);
+			}
+
+			// Shows resolved morph.dat path(s) so the user can verify before saving.
+			// All-shapes mode: shows base\chargen\{shape}\morph.dat for each non-ref shape.
+			// Single-shape mode: shows base\morph.dat.
+			auto refreshResolved = std::make_shared<std::function<void()>>(
+				[morphPathCtrl, morphShapeChoice, resolvedLabel, gameDataPath, nonRefShapeNames]() {
+					wxString mp = morphPathCtrl->GetValue();
+					if (mp.IsEmpty() || gameDataPath.IsEmpty()) {
+						resolvedLabel->SetLabel(wxEmptyString);
+					}
+					else if (morphShapeChoice->GetSelection() == 0) {
+						// All-shapes mode
+						wxString base = gameDataPath + PathSepChar + mp;
+						wxString lines;
+						if (nonRefShapeNames.empty()) {
+							lines = base + PathSepChar + "chargen" + PathSepChar + "<shape>" + PathSepChar + "morph.dat";
+						}
+						else {
+							for (const auto& sn : nonRefShapeNames) {
+								if (!lines.IsEmpty()) lines += "\n";
+								lines += base + PathSepChar + "chargen" + PathSepChar + sn + PathSepChar + "morph.dat";
+							}
+						}
+						resolvedLabel->SetLabel(lines);
+					}
+					else {
+						// Single-shape mode
+						resolvedLabel->SetLabel(gameDataPath + PathSepChar + mp + PathSepChar + "morph.dat");
+					}
+					resolvedLabel->GetParent()->Layout();
+				});
 
 			// Populate: use saved value, or infer from NIF output path when empty
 			wxString initPath = project->mSFMorphPath;
@@ -2719,31 +2796,9 @@ bool OutfitStudioFrame::SaveProjectAs() {
 			outPathCtrl->Bind(wxEVT_TEXT, syncFn);
 			outFileCtrl->Bind(wxEVT_TEXT, syncFn);
 
-			// Populate morph target shape dropdown
-			wxChoice* morphShapeChoice = XRCCTRL(dlg, "sssSFMorphTargetShape", wxChoice);
-			morphShapeChoice->Append("(None)");
-			NiShape* baseShape = project->GetBaseShape();
-			int firstNonRefIdx = wxNOT_FOUND;
-			int shapeIdx = 1; // 0 is "(None)"
-			for (auto& s : project->GetWorkNif()->GetShapes()) {
-				morphShapeChoice->Append(wxString::FromUTF8(s->name.get()));
-				if (firstNonRefIdx == wxNOT_FOUND && s != baseShape)
-					firstNonRefIdx = shapeIdx;
-				++shapeIdx;
-			}
-
-			if (!project->mSFMorphTargetShape.empty()) {
-				// Restore saved selection
-				int sel = morphShapeChoice->FindString(project->mSFMorphTargetShape);
-				morphShapeChoice->SetSelection(sel != wxNOT_FOUND ? sel : 0);
-			}
-			else if (firstNonRefIdx != wxNOT_FOUND) {
-				// Auto-select first non-reference shape
-				morphShapeChoice->SetSelection(firstNonRefIdx);
-			}
-			else {
-				morphShapeChoice->SetSelection(0);
-			}
+			morphShapeChoice->Bind(wxEVT_CHOICE, [refreshResolved](wxCommandEvent&) {
+				(*refreshResolved)();
+			});
 		}
 		else {
 			XRCCTRL(dlg, "m_SFMorphPathLabel",       wxStaticText)->Hide();
@@ -2905,7 +2960,7 @@ bool OutfitStudioFrame::SaveProjectAs() {
 	wxString strSFMorphTargetShape;
 	wxChoice* morphShapeChoice = XRCCTRL(dlg, "sssSFMorphTargetShape", wxChoice);
 	int sel = morphShapeChoice->GetSelection();
-	if (sel > 0) // 0 = "(None)"
+	if (sel > 0) // 0 = "(All shapes)" → empty string → all-shapes mode in WriteSFMorphFile
 		strSFMorphTargetShape = morphShapeChoice->GetString(sel);
 
 	bool     doRegRefTemplate  = XRCCTRL(dlg, "sssRegisterRefTemplate", wxCheckBox)->GetValue();
