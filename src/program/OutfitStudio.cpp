@@ -5642,10 +5642,13 @@ void OutfitStudioFrame::OnImportNIFFromArchive(wxCommandEvent& WXUNUSED(event)) 
 	wxLogMessage("Importing NIF '%s' from archive '%s'...",
 				 selPathStd.c_str(), selectedArchive->name().c_str());
 
+	// Build the real in-game path so ImportNIF can resolve external geometry and set correct project paths
+	std::string hintPath = Config["GameDataPath"] + selPathStd;
+
 	StartProgress(_("Importing NIF from archive..."));
 	UpdateProgress(1, _("Loading NIF..."));
 
-	project->ImportNIF(tmpPath.ToUTF8().data(), false);
+	project->ImportNIF(tmpPath.ToUTF8().data(), false, "", nullptr, hintPath);
 	wxRemoveFile(tmpPath);
 
 	UpdateProgress(60, _("Refreshing GUI..."));

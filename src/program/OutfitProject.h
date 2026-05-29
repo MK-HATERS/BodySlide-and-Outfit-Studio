@@ -482,7 +482,7 @@ public:
 	void ApplyPoseTransformsToShapeGeometry(nifly::NiShape* s, UndoStateShape& uss);
 	void ApplyPoseTransformsToAllShapeGeometry(UndoStateProject& usp);
 
-	int ImportNIF(const std::string& fileName, bool clear = true, const std::string& inOutfitName = "", std::map<std::string, std::string>* renamedShapes = nullptr);
+	int ImportNIF(const std::string& fileName, bool clear = true, const std::string& inOutfitName = "", std::map<std::string, std::string>* renamedShapes = nullptr, const std::string& hintPath = "");
 	int ExportNIF(const std::string& fileName, const std::vector<Mesh*>& modMeshes, bool withRef = false, std::optional<bool> useInternalGeom = std::nullopt);
 	int ExportShapeNIF(const std::string& fileName, const std::vector<std::string>& exportShapes, std::optional<bool> useInternalGeom = std::nullopt);
 

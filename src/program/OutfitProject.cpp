@@ -6211,7 +6211,7 @@ std::vector<bool> OutfitProject::CalculateAsymmetricTriangleVertexMask(NiShape* 
 	return mask;
 }
 
-int OutfitProject::ImportNIF(const std::string& fileName, bool clear, const std::string& inOutfitName, std::map<std::string, std::string>* renamedShapes) {
+int OutfitProject::ImportNIF(const std::string& fileName, bool clear, const std::string& inOutfitName, std::map<std::string, std::string>* renamedShapes, const std::string& hintPath) {
 	if (clear)
 		ClearOutfit();
 
@@ -6227,7 +6227,9 @@ int OutfitProject::ImportNIF(const std::string& fileName, bool clear, const std:
 	else if (outfitName.empty())
 		outfitName = "New Outfit";
 
-	wxFileName file(fileName);
+	// Use hintPath (real archive path) for project metadata; fall back to fileName
+	const std::string& pathForMeta = hintPath.empty() ? fileName : hintPath;
+	wxFileName file(wxString::FromUTF8(pathForMeta));
 	if (mBaseFile.empty())
 		mBaseFile = file.GetFullName();
 
@@ -6267,7 +6269,8 @@ int OutfitProject::ImportNIF(const std::string& fileName, bool clear, const std:
 		return 1;
 	}
 
-	ValidateNIF(nif, fileName);
+	// Use hintPath for geometry resolution so GetExternalGeometryStream can locate .mesh files
+	ValidateNIF(nif, pathForMeta);
 
 	nif.SetNodeName(0, "Scene Root");
 	nif.RenameDuplicateShapes();
