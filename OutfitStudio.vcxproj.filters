@@ -760,6 +760,18 @@
     <ClInclude Include="src\files\MaterialFile.h">
       <Filter>Files</Filter>
     </ClInclude>
+    <ClInclude Include="src\files\SFMaterialDatabase.h">
+      <Filter>Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\files\SFMaterialFile.h">
+      <Filter>Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\files\SFMaterialGraph.h">
+      <Filter>Files</Filter>
+    </ClInclude>
+    <ClInclude Include="src\files\SFResourceHash.h">
+      <Filter>Files</Filter>
+    </ClInclude>
     <ClInclude Include="src\program\OutfitStudio.h">
       <Filter>Program</Filter>
     </ClInclude>
@@ -818,6 +830,9 @@
       <Filter>Components</Filter>
     </ClInclude>
     <ClInclude Include="src\utils\PlatformUtil.h">
+      <Filter>Utilities</Filter>
+    </ClInclude>
+    <ClInclude Include="src\utils\StackTrace.h">
       <Filter>Utilities</Filter>
     </ClInclude>
     <ClInclude Include="src\utils\StringStuff.h">
@@ -2040,6 +2055,18 @@
     <ClCompile Include="src\files\MaterialFile.cpp">
       <Filter>Files</Filter>
     </ClCompile>
+    <ClCompile Include="src\files\SFMaterialDatabase.cpp">
+      <Filter>Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\files\SFMaterialFile.cpp">
+      <Filter>Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\files\SFMaterialGraph.cpp">
+      <Filter>Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\files\SFResourceHash.cpp">
+      <Filter>Files</Filter>
+    </ClCompile>
     <ClCompile Include="src\program\OutfitStudio.cpp">
       <Filter>Program</Filter>
     </ClCompile>
@@ -2100,7 +2127,13 @@
     <ClCompile Include="src\utils\PlatformUtil.cpp">
       <Filter>Utilities</Filter>
     </ClCompile>
+    <ClCompile Include="src\utils\StackTrace.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
     <ClCompile Include="src\utils\StringStuff.cpp">
+      <Filter>Utilities</Filter>
+    </ClCompile>
+    <ClCompile Include="src\utils\WxBuildConfigCheck.cpp">
       <Filter>Utilities</Filter>
     </ClCompile>
     <ClCompile Include="lib\gli\core\dummy.cpp">

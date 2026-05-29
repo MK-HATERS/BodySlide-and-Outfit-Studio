@@ -33,8 +33,10 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "SliderDataImportDialog.h"
 #include "AutomationDialog.h"
 #include "../components/ClippingFixer.h"
+#include "../utils/StackTrace.h"
 #include "../utils/StringStuff.h"
 
+#include <cstdlib>
 #include <sstream>
 #include <wx/debugrpt.h>
 #include <wx/listctrl.h>
@@ -478,7 +480,7 @@ bool OutfitStudio::OnInit() {
 #ifdef _DEBUG
 	std::string dataDir{wxGetCwd().ToUTF8()};
 #else
-	std::string dataDir{wxStandardPaths::Get().GetDataDir().ToUTF8()};
+	std::string dataDir{wxFileName(wxStandardPaths::Get().GetExecutablePath()).GetPath().ToUTF8()};
 #endif
 
 	Config.LoadConfig(dataDir + "/Config.xml");
@@ -486,7 +488,7 @@ bool OutfitStudio::OnInit() {
 
 	Config.SetDefaultValue("AppDir", dataDir);
 
-	logger.Initialize(Config.GetIntValue("LogLevel", -1), dataDir + "/Log_OS.txt");
+	logger.Initialize(Config.GetIntValue("LogLevel", 2), dataDir + "/Log_OS.txt");
 	wxLogMessage("Initializing Outfit Studio...");
 
 #ifdef NDEBUG
@@ -786,6 +788,8 @@ void OutfitStudio::OnFatalException() {
 	logger.SetFormatter(false);
 
 	wxLogError("Fatal exception has occurred, the program will terminate.");
+	LogStackTraceFromException();
+
 	wxMessageBox(_("Fatal exception has occurred, the program will terminate."), _("Fatal exception"), wxICON_ERROR);
 
 	wxDebugReport report;
@@ -5768,7 +5772,7 @@ void OutfitStudioFrame::OnImportFBX(wxCommandEvent& WXUNUSED(event)) {
 	wxLogMessage("Imported shape(s) from FBX.");
 	glView->Render();
 #else
-	wxMessageBox(_("FBX is only supported in 64-bit builds of Outfit Studio. Start \"OutfitStudio x64\" instead."), _("Info"), wxICON_INFORMATION);
+	wxMessageBox(_("FBX is only supported in 64-bit builds of Outfit Studio. Start the 64-bit Outfit Studio executable instead."), _("Info"), wxICON_INFORMATION);
 #endif
 }
 
@@ -5807,7 +5811,7 @@ void OutfitStudioFrame::OnExportFBX(wxCommandEvent& WXUNUSED(event)) {
 		wxMessageBox(_("Failed to export FBX file!"), _("Export Error"), wxICON_ERROR);
 	}
 #else
-	wxMessageBox(_("FBX is only supported in 64-bit builds of Outfit Studio. Start \"OutfitStudio x64\" instead."), _("Info"), wxICON_INFORMATION);
+	wxMessageBox(_("FBX is only supported in 64-bit builds of Outfit Studio. Start the 64-bit Outfit Studio executable instead."), _("Info"), wxICON_INFORMATION);
 #endif
 }
 
@@ -5871,7 +5875,7 @@ void OutfitStudioFrame::OnExportShapeFBX(wxCommandEvent& WXUNUSED(event)) {
 		}
 	}
 #else
-	wxMessageBox(_("FBX is only supported in 64-bit builds of Outfit Studio. Start \"OutfitStudio x64\" instead."), _("Info"), wxICON_INFORMATION);
+	wxMessageBox(_("FBX is only supported in 64-bit builds of Outfit Studio. Start the 64-bit Outfit Studio executable instead."), _("Info"), wxICON_INFORMATION);
 #endif
 }
 
@@ -9706,7 +9710,7 @@ void OutfitStudioFrame::OnSliderImportFBX(wxCommandEvent& WXUNUSED(event)) {
 	ApplySliders();
 	HighlightSliderData();
 #else
-	wxMessageBox(_("FBX is only supported in 64-bit builds of Outfit Studio. Start \"OutfitStudio x64\" instead."), _("Info"), wxICON_INFORMATION);
+	wxMessageBox(_("FBX is only supported in 64-bit builds of Outfit Studio. Start the 64-bit Outfit Studio executable instead."), _("Info"), wxICON_INFORMATION);
 #endif
 }
 
@@ -14298,6 +14302,10 @@ void wxGLPanel::SetMeshTextures(
 	if (targetGame == FO4 || targetGame == FO4VR || targetGame == FO76) {
 		vShader = Config["AppDir"] + "/res/shaders/fo4_default.vert";
 		fShader = Config["AppDir"] + "/res/shaders/fo4_default.frag";
+	}
+	else if (targetGame == SF) {
+		vShader = Config["AppDir"] + "/res/shaders/sf_default.vert";
+		fShader = Config["AppDir"] + "/res/shaders/sf_default.frag";
 	}
 	else if (targetGame == OB) {
 		vShader = Config["AppDir"] + "/res/shaders/ob_default.vert";

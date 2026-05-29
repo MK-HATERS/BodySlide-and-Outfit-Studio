@@ -22,6 +22,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "../files/wxDDSImage.h"
 #include "../utils/PlatformUtil.h"
 #include "../utils/ParallelFor.h"
+#include "../utils/StackTrace.h"
 #include "../utils/StringStuff.h"
 
 #include <algorithm>
@@ -131,7 +132,7 @@ bool BodySlideApp::OnInit() {
 #ifdef _DEBUG
 	std::string dataDir{wxGetCwd().ToUTF8()};
 #else
-	std::string dataDir{wxStandardPaths::Get().GetDataDir().ToUTF8()};
+	std::string dataDir{wxFileName(wxStandardPaths::Get().GetExecutablePath()).GetPath().ToUTF8()};
 #endif
 
 	Config.LoadConfig(dataDir + "/Config.xml");
@@ -139,7 +140,7 @@ bool BodySlideApp::OnInit() {
 
 	Config.SetDefaultValue("AppDir", dataDir);
 
-	logger.Initialize(Config.GetIntValue("LogLevel", -1), dataDir + "/Log_BS.txt");
+	logger.Initialize(Config.GetIntValue("LogLevel", 2), dataDir + "/Log_BS.txt");
 	wxLogMessage("Initializing BodySlide...");
 
 #ifdef NDEBUG
@@ -352,6 +353,8 @@ void BodySlideApp::OnFatalException() {
 	logger.SetFormatter(false);
 
 	wxLogError("Fatal exception has occurred, the program will terminate.");
+	LogStackTraceFromException();
+
 	wxMessageBox(_("Fatal exception has occurred, the program will terminate."), _("Fatal exception"), wxICON_ERROR);
 
 	wxDebugReport report;
@@ -1291,9 +1294,7 @@ void BodySlideApp::EditProject(const std::string& projectName) {
 }
 
 void BodySlideApp::LaunchOutfitStudio(const wxString& args) {
-#ifdef WIN64
-	const wxString osExec = "OutfitStudio x64.exe";
-#elif _WIN32
+#ifdef _WIN32
 	const wxString osExec = "OutfitStudio.exe";
 #else
 	const wxString osExec = "OutfitStudio";
@@ -5904,7 +5905,8 @@ void BodySlideFrame::OnChoosePreset(wxCommandEvent& WXUNUSED(event)) {
 		return;
 
 	std::string sstr = GetSelectedPresetName();
-	if (sstr == BodySlideConfig["SelectedPreset"]) {
+	bool presetChanged = btnSavePreset && btnSavePreset->IsEnabled();
+	if (sstr == BodySlideConfig["SelectedPreset"] && !presetChanged) {
 		UpdateFavoriteButtons();
 		return;
 	}

@@ -13,8 +13,8 @@ $Dest      = "F:\ModManager\Mo2-Starfield\Data\mods\BodySlide Studio\Tools\Bodys
 
 # ── Verify build outputs exist ──────────────────────────────────────────────
 $exes = @(
-    Join-Path $BuildDir "BodySlide x64.exe"
-    Join-Path $BuildDir "OutfitStudio x64.exe"
+    Join-Path $BuildDir "BodySlide.exe"
+    Join-Path $BuildDir "OutfitStudio.exe"
 )
 foreach ($exe in $exes) {
     if (-not (Test-Path $exe)) {
